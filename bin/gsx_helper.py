@@ -26,8 +26,9 @@ import scipy as sp
 import pandas as pd
 
 from bionlp.spider import annot, sparql
-from bionlp.util import fs, io, func, plot, ontology
+from bionlp.util import fs, io, func, plot, ontology, shell
 from bionlp import dstclc, nlp, metric
+from bioinfo.ext import chdir, limma
 # from bionlp import txtclt
 
 import gsc
@@ -47,6 +48,13 @@ def init_plot(plot_cfg={}, plot_common={}):
 	global common_cfg
 	if (len(plot_common) > 0):
 		common_cfg = plot_common
+
+		
+def fuseki(sh='bash'):
+	common_cfg = cfgr('gsx_helper', 'common')
+	proc_cmd = ' && '.join([common_cfg['FUSEKI_ENV'], '%s --port=8890 --config=$FUSEKI_HOME/run/config.ttl >/var/log/fuseki.log 2>&1 &' % 'fuseki-server' if common_cfg['FUSEKI_PATH'] is None or common_cfg['FUSEKI_PATH'].isspace() else os.path.join(common_cfg['FUSEKI_PATH'], 'fuseki-server')])
+	cmd = proc_cmd if sh == 'sh' else '%s -c "%s"' % (sh, proc_cmd)
+	shell.daemon(cmd, 'fuseki-server')
 
 
 def nt2db():
@@ -106,11 +114,12 @@ def download():
 			del geo_data
 	else:
 		from bionlp.spider import geoxml as geo
-		geo_strs = geo.fetch_geo(list(excel_df['geo_id']), saved_path=saved_path, **kwargs)
+		geo_strs = list(geo.fetch_geo(list(excel_df['geo_id']), saved_path=saved_path, **kwargs))
 		geo_strios = [cStringIO.StringIO(str) for str in geo_strs]
 		geo_docs = geo.parse_geos(geo_strios)
 		samples = [sample for geo_doc in geo_docs for sample in geo_doc['samples']]
-		sample_strs = geo.fetch_geo(samples, saved_path=os.path.join(saved_path, 'samples'), **kwargs)
+		for sample_str in geo.fetch_geo(samples, saved_path=os.path.join(saved_path, 'samples'), **kwargs):
+			del sample_str
 
 def slct_featset():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
@@ -298,7 +307,7 @@ def _annot_sgn(geo_id, geo_doc, txt_fields, cache_path='.cache'):
 			ret_dict = json.loads(json_str)
 		else:
 			try:
-				ret_dict = annot.annotxt(geo_doc[field], retype='dict')
+				ret_dict = annot.annotext(geo_doc[field], retype='dict')
 			except Exception as e:
 				print 'Unable to annotate %s in the %s field!' % (geo_id, field)
 				print e
@@ -307,7 +316,7 @@ def _annot_sgn(geo_id, geo_doc, txt_fields, cache_path='.cache'):
 			fs.write_file(json_str, field_cachef, code='utf8')
 		# Transform the data into groups
 		ret_dict['text'] = geo_doc[field]
-		annot_res.append(annot.annotxt(ret_dict, retype='group', with_mdf=True if (field=='source') else False))
+		annot_res.append(annot.annotext(ret_dict, retype='group', with_mdf=True if (field=='source') else False))
 	io.write_obj(annot_res, doc_cachef)
 	# Return the groups for each text fields
 	return annot_res
@@ -322,6 +331,24 @@ def annot_sgn():
 		annot_res.update(dict([(geo_id, _annot_sgn(geo_id, geo_data[0], txt_field, cache_path=cache_path)) for geo_id, geo_data in geo_docs.iteritems()]))
 	io.write_obj(annot_res_set[0], os.path.join(cache_path, 'gse_annot.pkl'))
 	io.write_obj(annot_res_set[1], os.path.join(cache_path, 'gsm_annot.pkl'))
+
+	
+def _sgn2ge(excel_df, sample_path, saved_path, format='xml'):
+	if (format == 'soft'):
+		from bionlp.spider import geo
+	else:
+		from bionlp.spider import geoxml as geo
+	for i, (ctrl_str, pert_str) in enumerate(zip(excel_df['ctrl_ids'], excel_df['pert_ids'])):
+		ctrl_file, pert_file = os.path.join(saved_path, 'ctrl_%i.npz' % i), os.path.join(saved_path, 'pert_%i.npz' % i)
+		if (os.path.exists(ctrl_file) and os.path.exists(pert_file)): continue
+		ctrl_ids, pert_ids = ctrl_str.split('|'), pert_str.split('|')
+		# Obtain the geo files for each sample
+		ctrl_geo_docs, pert_geo_docs = geo.parse_geos([os.path.join(sample_path, '.'.join([ctrl_id, format])) for ctrl_id in ctrl_ids], view='full', type='gsm', fmt=format), geo.parse_geos([os.path.join(sample_path, '.'.join([pert_id, format])) for pert_id in pert_ids], view='full', type='gsm', fmt=format)
+		# Extract the gene expression data from the geo files for each sample, and combine the data within the same group
+		ctrl_ge_dfs, pert_ge_dfs = [geo_doc['data']['VALUE'] for geo_doc in ctrl_geo_docs], [geo_doc['data']['VALUE'] for geo_doc in pert_geo_docs]
+		ctrl_df, pert_df = pd.concat(ctrl_ge_dfs, axis=1, join='inner').astype('float32'), pd.concat(pert_ge_dfs, axis=1, join='inner').astype('float32')
+		io.write_df(ctrl_df, ctrl_file, with_col=False, with_idx=True)
+		io.write_df(pert_df, pert_file, with_col=False, with_idx=True)
 	
 	
 def sgn2ge():
@@ -334,23 +361,63 @@ def sgn2ge():
 		excel_df = io.read_df(opts.loc)
 	par_dir, basename = os.path.abspath(os.path.join(opts.loc, os.path.pardir)), os.path.splitext(os.path.basename(opts.loc))[0]
 	sample_path = os.path.join(gsc.GEO_PATH, opts.type, basename, 'samples')
-	saved_path = os.path.join(par_dir, 'gedata', basename) if opts.output is None else os.path.join(opts.output, 'gedata', basename)
+	saved_path = os.path.join(par_dir, 'gedata', basename) if opts.output is None else os.path.join(opts.output, basename)
 	# Find the control group and perturbation group for every signature
-	for i, (ctrl_str, pert_str) in enumerate(zip(excel_df['ctrl_ids'], excel_df['pert_ids'])):
-		ctrl_file, pert_file = os.path.join(saved_path, 'ctrl_%i.npz' % i), os.path.join(saved_path, 'pert_%i.npz' % i)
-		if (os.path.exists(ctrl_file) and os.path.exists(pert_file)): continue
-		ctrl_ids, pert_ids = ctrl_str.split('|'), pert_str.split('|')
-		# Obtain the geo files for each sample
-		ctrl_geo_docs, pert_geo_docs = geo.parse_geos([os.path.join(sample_path, '.'.join([ctrl_id, opts.type])) for ctrl_id in ctrl_ids], view='full', type='gsm', fmt=opts.type), geo.parse_geos([os.path.join(sample_path, '.'.join([pert_id, opts.type])) for pert_id in pert_ids], view='full', type='gsm', fmt=opts.type)
-		# Extract the gene expression data from the geo files for each sample, and combine the data within the same group
-		ctrl_ge_dfs, pert_ge_dfs = [geo_doc['data']['VALUE'] for geo_doc in ctrl_geo_docs], [geo_doc['data']['VALUE'] for geo_doc in pert_geo_docs]
-		ctrl_df, pert_df = pd.concat(ctrl_ge_dfs, axis=1, join='inner'), pd.concat(pert_ge_dfs, axis=1, join='inner')
-		io.write_df(ctrl_df, ctrl_file, with_col=False, with_idx=True)
-		io.write_df(pert_df, pert_file, with_col=False, with_idx=True)
+	_sgn2ge(excel_df, sample_path, saved_path, format=opts.type)
+
+
+def _sgn2dge(excel_df, method, ge_path, saved_path, cache_path):
+	_method = method.lower()
+	ids = excel_df['id'] if hasattr(excel_df, 'id') else excel_df.index
+	dge_dfs = []
+	for i, id in enumerate(ids):
+		dge_file = os.path.join(saved_path, 'dge_%i.npz' % i)
+		if (os.path.exists(dge_file)):
+			dge_df = io.read_df(dge_file, with_idx=True)
+			dge_dfs.append(dge_df)
+			continue
+		ctrl_file, pert_file = os.path.join(ge_path, 'ctrl_%i.npz' % i), os.path.join(ge_path, 'pert_%i.npz' % i)
+		ctrl_df, pert_df = io.read_df(ctrl_file, with_col=False, with_idx=True), io.read_df(pert_file, with_col=False, with_idx=True)
+		# Find the gene sets that are both in control group and perturbation group
+		join_df = pd.concat([ctrl_df, pert_df], axis=1, join='inner')
+		print 'Start %s algorithm for No.%i %s...%s, %s, %s' % (method.upper(), i, id, ctrl_df.shape, pert_df.shape, join_df.shape)
+		# Calculate the differential gene expression vector
+		if (_method == 'cd'):
+			dge_vec = chdir.chdir(join_df.iloc[:,:ctrl_df.shape[1]].as_matrix(), join_df.iloc[:,ctrl_df.shape[1]:].as_matrix(), 1).reshape((-1,))
+			pval_vec = 0.01 * np.ones_like(dge_vec, dtype='float16')
+		elif (_method.startswith('limma')):
+			join_df.index = map(str, join_df.index) # It may cause incorrect convert from Python to R if the index is a large number
+			if (_method == 'limma'):
+				metric, adjust = 't', None
+			elif (_method == 'limma-fdr'):
+				metric, adjust = 't', 'BH'
+			elif (_method == 'limma-bonferroni'):
+				metric, adjust = 't', 'bonferroni'
+			elif (_method == 'limma-logfc'):
+				metric, adjust = 'logFC', None
+			elif (_method == 'limma-logodd'):
+				metric, adjust = 'B', None
+			if (adjust is None):
+				cachef = os.path.join(cache_path, 'limma', '%s.npz' % id)
+			else:
+				cachef = os.path.join(cache_path, 'limma-%s' % adjust, '%s.npz' % id)
+			cache, df = False, join_df
+			if (os.path.exists(cachef)):
+				df = io.read_df(cachef, with_idx=True)
+				cache = True
+			dge_vec, pval_vec, dt = limma.dge(df, mask=[0]*ctrl_df.shape[1] + [1]*pert_df.shape[1], metric=metric, adjust=adjust, cache=cache)
+			if (not cache):
+				io.write_df(dt, cachef, with_idx=True, compress=True)
+		else:
+			print '%s is not implemented!' % method.upper()
+			exit(1)
+		dge_df = pd.DataFrame(np.stack((dge_vec, pval_vec), axis=-1), index=join_df.index, columns=['statistic', 'pvalue'], dtype='float16')
+		io.write_df(dge_df, dge_file, with_idx=True, compress=True)
+		dge_dfs.append(dge_df)
+	return dge_dfs
 		
 		
-def sgn2deg():
-	from bioinfo.ext.chdir import chdir as deg_chdir
+def sgn2dge():
 	input_ext = os.path.splitext(opts.loc)[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
 		excel_df = pd.read_excel(opts.loc)
@@ -362,23 +429,19 @@ def sgn2deg():
 		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
 		exit(1)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	method = kwargs.setdefault('method', 'cd')
 	par_dir, basename = os.path.abspath(os.path.join(opts.loc, os.path.pardir)), os.path.splitext(os.path.basename(opts.loc))[0]
-	ge_path = os.path.join(kwargs.setdefault('ge_dir', gsc.GEO_PATH), 'gedata', basename)
-	saved_path = os.path.join(par_dir, 'deg', basename) if opts.output is None else os.path.join(opts.output, 'deg', basename)
+	ge_path = os.path.join(kwargs.setdefault('ge_dir', os.path.join(gsc.GEO_PATH, 'gedata')), basename)
+	saved_path = os.path.join(par_dir, 'dge', method.lower(), basename) if opts.output is None else os.path.join(opts.output, method.lower(), basename)
+	cache_path = os.path.join(par_dir, 'dge', 'cache', basename) if opts.output is None else os.path.join(opts.output, 'cache', basename)
+	if (os.path.isdir(os.path.join(saved_path, 'filtered'))):
+		print 'Filtered data exists in save path: %s\nPlease move them to the original folder!' % saved_path
+		exists(-1)
+	elif (os.path.isdir(os.path.join(cache_path, 'filtered'))):
+		print 'Filtered data exists in cache path: %s\nPlease move them to the original folder!' % cache_path
+		exists(-1)
 	# Extract the control group and perturbation group of each gene expression signature
-	ids = excel_df['id'] if hasattr(excel_df, 'id') else excel_df.index
-	for i, id in enumerate(ids):
-		deg_file = os.path.join(saved_path, 'deg_%i.npz' % i)
-		if (os.path.exists(deg_file)): continue
-		ctrl_file, pert_file = os.path.join(ge_path, 'ctrl_%i.npz' % i), os.path.join(ge_path, 'pert_%i.npz' % i)
-		ctrl_df, pert_df = io.read_df(ctrl_file, with_col=False, with_idx=True), io.read_df(pert_file, with_col=False, with_idx=True)
-		# Find the gene sets that are both in control group and perturbation group
-		join_df = pd.concat([ctrl_df, pert_df], axis=1, join='inner')
-		print 'Start CD algorithm for No.%i %s...%s, %s, %s' % (i, id, ctrl_df.shape, pert_df.shape, join_df.shape)
-		# Calculate the differentially expressed genes vector
-		deg_vec = deg_chdir(join_df.iloc[:,:ctrl_df.shape[1]].as_matrix(), join_df.iloc[:,ctrl_df.shape[1]:].as_matrix(), 1).reshape((-1,))
-		deg_df = pd.DataFrame(deg_vec, index=join_df.index, columns=[id])
-		io.write_df(deg_df, deg_file, with_idx=True)
+	_sgn2dge(excel_df, method, ge_path, saved_path, cache_path)
 		
 
 def _ji(a, b):
@@ -402,16 +465,6 @@ def _sjiv(X, Y):
 		simmt[i, j] = _sji(X[i], Y[j])
 	return simmt
 	
-def _sjim(X, Y):
-	Y_T = Y.T
-	interaction = X.dot(Y_T) # XY' shape of (2m, 2n)
-	# union = X.sum(axis=1).reshape((-1, 1)).repeat(Y.shape[0], axis=1) + Y_T.sum(axis=0).reshape((1, -1)).repeat(X.shape[0], axis=0) - interaction
-	union = X.dot(np.ones((X.shape[1]), dtype='int8')).reshape((-1, 1)).repeat(Y.shape[0], axis=1) + np.ones((Y_T.shape[0]), dtype='int8').dot(Y_T).reshape((1, -1)).repeat(X.shape[0], axis=0) - interaction # XI+IY'-XY', dot can be parallelized but not sum
-	r = 1.0 * interaction / union
-	r = r.reshape((r.shape[0]/2, 2, r.shape[1]/2, 2))
-	s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2)) # sum reduction
-	return s
-	
 def _sjic(X, Y):
 	Y_T = Y.T
 	interaction = np.tensordot(X, Y, axes=[[-1],[-1]]).transpose(range(len(X.shape)-1)+range(len(X.shape)-1, len(X.shape)+len(Y.shape)-2)[::-1]) # XY' shape of (m, 2, 2, n)
@@ -419,44 +472,64 @@ def _sjic(X, Y):
 	r = 1.0 * interaction / union
 	s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[1],[0]]).reshape((X.shape[0], Y.shape[0])) # sum reduction
 	return s
+	
+def _sjim(X, Y, signed=True):
+	Y_T = Y.T
+	interaction = X.dot(Y_T) # XY' shape of (2m, 2n)
+	# union = X.sum(axis=1).reshape((-1, 1)).repeat(Y.shape[0], axis=1) + Y_T.sum(axis=0).reshape((1, -1)).repeat(X.shape[0], axis=0) - interaction
+	union = X.dot(np.ones((X.shape[1]), dtype='int8')).reshape((-1, 1)).repeat(Y.shape[0], axis=1) + np.ones((Y_T.shape[0]), dtype='int8').dot(Y_T).reshape((1, -1)).repeat(X.shape[0], axis=0) - interaction # XI+IY'-XY', dot can be parallelized but not sum
+	r = 1.0 * interaction / union
+	r = r.reshape((r.shape[0]/2, 2, r.shape[1]/2, 2))
+	# Sum reduction
+	if (signed):
+		s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
+	else:
+		s = np.tensordot(np.tensordot(np.array([[1,0]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[0]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
+	return s
+	
 		
-def deg2simmt():
+def dge2simmt():
 	# from sklearn.externals.joblib import Parallel, delayed
 	from sklearn.metrics import pairwise
 	from sklearn.preprocessing import MultiLabelBinarizer
-	locs = opts.loc.split(',')
+	locs = opts.loc.split(SC)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	method = kwargs.setdefault('method', 'cd')
+	_method = method.lower()
 	basenames, input_exts = zip(*[os.path.splitext(os.path.basename(loc)) for loc in locs])
 	if (input_exts[0] == '.csv'):
 		excel_dfs = [pd.read_csv(loc) for loc in locs]
 	elif (input_exts[0] == '.npz'):
 		excel_dfs = [io.read_df(loc) for loc in locs]
-	ge_dir = kwargs.setdefault('ge_dir', gsc.GEO_PATH)
-	simmt_file = os.path.join(ge_dir, 'simmt.npz')
-	idx_cols = kwargs.setdefault('idx_cols', 'hs_gene_symbol,drug_name,disease_name').split(',')
+	dge_dir = kwargs.setdefault('dge_dir', os.path.join(gsc.GEO_PATH, 'dge'))
+	simmt_file = os.path.join(dge_dir, 'simmt.npz')
+	idx_cols = kwargs.setdefault('idx_cols', 'disease_name;;drug_name;;gene_symbol').split(SC)
 	cache_f = os.path.join(opts.cache, 'udgene.pkl')
+	signed = True if (int(kwargs.setdefault('signed', 1)) == 1) else False
 	# Read the data
-
 	if (os.path.exists(cache_f)):
-		print 'Reading cache...'
-		sys.stdout.flush()
+		io.inst_print('Reading cache...')
 		ids, id_bndry = io.read_obj(cache_f)
 		if (not os.path.exists(simmt_file)):
 			udgene_spmt = io.read_spmt(os.path.splitext(cache_f)[0]+'.npz')
 	else:
-		print 'Preparing data...'
-		sys.stdout.flush()
+		io.inst_print('Preparing data...')
 		ids, id_bndry, udgene = [[] for i in range(3)]
 		# Read all the differentially expressed genes vector of each collection
 		for basename, excel_df, idx_col in zip(basenames, excel_dfs, idx_cols):
-			deg_path = os.path.join(ge_dir, 'deg', basename)
+			dge_path = os.path.join(dge_dir, _method, basename)
+			if (os.path.isdir(os.path.join(dge_path, 'filtered'))):
+				print 'Filtered data exists in dge path: %s\nPlease move them to the original folder!' % dge_path
+				exists(-1)
 			sgn_ids = excel_df['id'].tolist()
 			# sgn_ids = excel_df[idx_col].tolist() # customized identity for each signature
 			ids.extend(sgn_ids)
 			id_bndry.append(len(sgn_ids)) # append number of signatures to form the boundaries
 			for i in xrange(len(sgn_ids)):
-				deg_df = io.read_df(os.path.join(deg_path, 'deg_%i.npz' % i), with_idx=True)
-				udgene.append((set(deg_df.index[np.where(deg_df.iloc[:,0] > 0)[0]]), set(deg_df.index[np.where(deg_df.iloc[:,0] < 0)[0]])))
+				dge_df = io.read_df(os.path.join(dge_path, 'dge_%i.npz' % i), with_idx=True)
+				if (hasattr(dge_df, 'pvalue')):
+					dge_df.drop(dge_df.index[np.where(dge_df['pvalue'] < (opts.thrshd if (type(opts.thrshd) is float) else 0.05))[0]], axis=0)
+				udgene.append((set(dge_df.index[np.where(dge_df.iloc[:,0] > 0)[0]]), set(dge_df.index[np.where(dge_df.iloc[:,0] < 0)[0]])))
 		unrolled_udgene = func.flatten_list(udgene)
 		# Transform the up-down regulate gene expression data into binary matrix
 		mlb = MultiLabelBinarizer(sparse_output=True)
@@ -465,13 +538,11 @@ def deg2simmt():
 		id_bndry = np.cumsum([0] + id_bndry).tolist()
 		io.write_obj([ids, id_bndry], cache_f)
 	if (os.path.exists(simmt_file)):
-		print 'Reading similarity matrix...'
-		sys.stdout.flush()
+		io.inst_print('Reading similarity matrix...')
 		simmt = io.read_df(simmt_file, with_idx=True, sparse_fmt=opts.spfmt)
 	else:
 		# Calculate the global similarity matrix across all the collections
-		print 'Calculating the similarity matrix...'
-		sys.stdout.flush()
+		io.inst_print('Calculating the %s similarity matrix...' % ('signed' if signed else 'unsigned'))
 		# Serial method
 		# simmt = pd.DataFrame(np.ones((len(ids), len(ids))), index=ids, columns=ids)
 		# for i, j in itertools.combinations(range(len(ids)), 2):
@@ -483,15 +554,15 @@ def deg2simmt():
 		del udgene_spmt
 		# Parallel method
 		# similarity = dstclc.parallel_pairwise(udgene_mt, None, _sjim, n_jobs=opts.np, min_chunksize=2)
-		similarity = _sjim(udgene_mt, udgene_mt)
+		similarity = _sjim(udgene_mt, udgene_mt, signed=signed)
 		# Tensor data structure
 		# udgene_cube = udgene_mt.reshape((-1, 2, udgene_mt.shape[1]))
 		# similarity = _sjic(udgene_cube, udgene_cube)
+		np.fill_diagonal(similarity, 1)
 		simmt = pd.DataFrame(similarity, index=ids, columns=ids, dtype=similarity.dtype)
 		io.write_df(simmt, simmt_file, with_idx=True, sparse_fmt=opts.spfmt, compress=True)
 	# Calculate the similarity matrix within each collection
-	print 'Splitting the similarity matrix...'
-	sys.stdout.flush()
+	io.inst_print('Splitting the similarity matrix...')
 	for k in xrange(len(excel_dfs)):
 		idx_pair = (id_bndry[k], id_bndry[k + 1])
 		sub_simmt = simmt.iloc[idx_pair[0]:idx_pair[1],idx_pair[0]:idx_pair[1]]
@@ -513,7 +584,16 @@ def onto2simmt():
 			if (len(txt) <= 30):
 				new_list.append(txt)
 		return set(new_list)
-	excel_df = pd.read_csv(opts.loc)
+	input_ext = os.path.splitext(opts.loc)[1]
+	if (input_ext == '.xlsx' or input_ext == '.xls'):
+		excel_df = pd.read_excel(opts.loc)
+	elif (input_ext == '.csv'):
+		excel_df = pd.read_csv(opts.loc)
+	elif (input_ext == '.npz'):
+		excel_df = io.read_df(opts.loc)
+	else:
+		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
+		exit(1)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	col_name, db_name = kwargs['col_name'], kwargs['db_name']
 	ontog = sparql.SPARQL('http://localhost:8890/%s/query' % db_name)
@@ -524,6 +604,7 @@ def onto2simmt():
 		fn_func = ontology.define_obo_fn(ontog, type='fuzzy', prdns=[('obowl', ontology.OBOWL)], eqprds={})
 		distmt, vname = ontology.transitive_closure_dsg(ontog, excel_df[col_name].tolist(), find_neighbors=fn_func, filter=filter)
 	simmt = coo_matrix((1-dstclc.normdist(distmt.data.astype('float32')), (distmt.row, distmt.col)), shape=distmt.shape)
+	simmt.setdiag(1)
 	sim_df = pd.DataFrame(simmt.toarray(), index=vname, columns=vname)
 	io.write_df(sim_df, 'simmt_%s_%s.npz' % (col_name, db_name), with_idx=True, sparse_fmt=opts.spfmt, compress=True)
 	
@@ -536,7 +617,16 @@ def ddi2simmt():
 	cache_path = os.path.join(opts.cache, 'drug_intrcts.pkl')
 	drug_cache_path = os.path.join(gsc.RXNAV_PATH, 'drug')
 	intr_cache_path = os.path.join(gsc.RXNAV_PATH, 'interaction')
-	excel_df = pd.read_csv(opts.loc)
+	input_ext = os.path.splitext(opts.loc)[1]
+	if (input_ext == '.xlsx' or input_ext == '.xls'):
+		excel_df = pd.read_excel(opts.loc)
+	elif (input_ext == '.csv'):
+		excel_df = pd.read_csv(opts.loc)
+	elif (input_ext == '.npz'):
+		excel_df = io.read_df(opts.loc)
+	else:
+		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
+		exit(1)
 	drug_list = excel_df[col_name].tolist()
 	if (os.path.exists(cache_path)):
 		interactions = io.read_obj(cache_path)
@@ -623,6 +713,7 @@ def ddi2simmt():
 		cols.extend(col + row)
 		data.extend(val + val)
 	simmt = coo_matrix((data, (rows, cols)), shape=(len(drugs), len(drugs)), dtype='int8')
+	simmt.setdiag(1)
 	sim_df = pd.DataFrame(simmt.toarray(), index=drugs, columns=drugs)
 	io.write_df(sim_df, 'simmt_drug_%s.npz' % col_name, with_idx=True, sparse_fmt=opts.spfmt, compress=True)
 
@@ -632,14 +723,28 @@ def ppi2simmt():
 	from scipy.sparse import coo_matrix
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	col_name = kwargs['col_name']
-	cache_path = os.path.join(opts.cache, 'gene_intrcts.pkl')
+	cache_path = os.path.join(opts.cache, 'gene_intrcts.pkl'), os.path.join(opts.cache, 'opt_gene_intrcts.pkl')
 	intr_cache_path = os.path.join(gsc.BIOGRID_PATH, 'interaction')
-	excel_df = pd.read_csv(opts.loc)
-	gene_list = excel_df[col_name].tolist()
-	if (os.path.exists(cache_path)):
-		interactions = io.read_obj(cache_path)
+	input_ext = os.path.splitext(opts.loc)[1]
+	if (input_ext == '.xlsx' or input_ext == '.xls'):
+		excel_df = pd.read_excel(opts.loc)
+	elif (input_ext == '.csv'):
+		excel_df = pd.read_csv(opts.loc)
+	elif (input_ext == '.npz'):
+		excel_df = io.read_df(opts.loc)
 	else:
-		interactions = []
+		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
+		exit(1)
+	gene_list = excel_df[col_name].tolist()
+	if (os.path.exists(cache_path[0])):
+		interactions = io.read_obj(cache_path[0])
+		if (os.path.exists(cache_path[1])):
+			opt_intrct = io.read_obj(cache_path[1])
+		else:
+			opt_intrct = []
+	else:
+		interactions, opt_intrct = [], []
+		# Construct the client
 		ppi_client = biogrid.BioGRIDAPI(function='interaction', api_key=kwargs['api_key'])
 		for gene in gene_list:
 			# Check the cache
@@ -657,16 +762,32 @@ def ppi2simmt():
 				continue
 			for k in sorted([int(x) for x in res.keys()]):
 				ipair = res[str(k)]
-				isymbol = set([ipair['OFFICIAL_SYMBOL_A'].lower()] + ipair['SYNONYMS_A'].lower().split('|')), set([ipair['OFFICIAL_SYMBOL_B'].lower()] + ipair['SYNONYMS_B'].lower().split('|'))
-				gene = gene.lower()
-				if (gene in isymbol[0]):
+				isymbol = list(set([ipair['OFFICIAL_SYMBOL_A'].lower()] + ipair['SYNONYMS_A'].lower().split('|'))), list(set([ipair['OFFICIAL_SYMBOL_B'].lower()] + ipair['SYNONYMS_B'].lower().split('|')))
+				l_gene = gene.lower()
+				# If the gene is an official symbol then directly add the interaction tems, otherwise add the relation between this synonym and the official symbol
+				try:
+					idx = isymbol[0].index(l_gene)
+					if (idx != 0):
+						opt_intrct.append((gene, ipair['OFFICIAL_SYMBOL_A']))
 					intrct_concepts.append(ipair['OFFICIAL_SYMBOL_B'])
-				elif (gene in isymbol[1]):
-					intrct_concepts.append(ipair['OFFICIAL_SYMBOL_A'])
+				except ValueError as e:
+					try:
+						idx = isymbol[1].index(l_gene)
+						if (idx != 0):
+							opt_intrct.append((gene, ipair['OFFICIAL_SYMBOL_B']))
+						intrct_concepts.append(ipair['OFFICIAL_SYMBOL_A'])
+					except Exception as e:
+						pass
+				# if (l_gene in isymbol[0]):
+					# intrct_concepts.append(ipair['OFFICIAL_SYMBOL_B'])
+				# elif (l_gene in isymbol[1]):
+					# intrct_concepts.append(ipair['OFFICIAL_SYMBOL_A'])
 			interactions.append(intrct_concepts)
 			del res, intrct_concepts
-		io.write_obj(interactions, cache_path)
-	genes = list(set(gene_list + func.flatten_list(interactions)))
+		io.write_obj(interactions, cache_path[0])
+		io.write_obj(opt_intrct, cache_path[1])
+	# Construct the adjacent matrix of the genes
+	genes = list(set(gene_list + func.flatten_list(interactions) + func.flatten_list(opt_intrct)))
 	gene_idx = dict([(s, i) for i, s in enumerate(genes)])
 	rows, cols, data = [[] for x in range(3)]
 	for gene, interaction in zip(gene_list, interactions):
@@ -674,25 +795,68 @@ def ppi2simmt():
 		rows.extend(row + col)
 		cols.extend(col + row)
 		data.extend(val + val)
+	for gene, o_symbol in opt_intrct:
+		row, col, val = gene_idx[gene] , gene_idx[o_symbol] , 2
+		rows.extend([row, col])
+		cols.extend([col, row])
+		data.extend([val, val])
 	simmt = coo_matrix((data, (rows, cols)), shape=(len(genes), len(genes)), dtype='int8')
+	simmt.setdiag(1)
 	sim_df = pd.DataFrame(simmt.toarray(), index=genes, columns=genes)
+	# Calculate the transitive path through the synonym symbol
+	# for m, k in set([tuple(sorted(x)) for x in zip(*np.where(sim_df == 2))]):
+	for m, k in zip(*np.where(sim_df == 2)):
+		for n in np.where(sim_df.iloc[:,k] == 1)[0]:
+			sim_df.iloc[m, n] = 1
+	# Reset the relation between the synonym and the official symbol to 1
+	sim_df[sim_df==2] = 1
 	io.write_df(sim_df, 'simmt_gene_%s.npz' % col_name, with_idx=True, sparse_fmt=opts.spfmt, compress=True)
 	
 	
 def sgn_eval():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
-	excel_df, sgn_simmt, true_simmt = pd.read_csv(os.path.join(opts.loc, kwargs['sgn'])), io.read_df(os.path.join(opts.loc, kwargs['sgnsim']), with_idx=True, sparse_fmt=opts.spfmt), io.read_df(os.path.join(opts.loc, kwargs['truesim']), with_idx=True, sparse_fmt=opts.spfmt)
-	col_name, sgnsim_lb, truesim_lb = kwargs['col_name'], kwargs['sgnsim_lb'], kwargs['truesim_lb']
-	overlaps = set([str(x).lower() for x in excel_df[col_name]]) & set([str(x).lower() for x in true_simmt.index])
-	sgn_simmt = dstclc.normdist(sgn_simmt)
-	unique_idx = {}
-	for i, symbol in enumerate(excel_df[col_name]):
-		unique_idx.setdefault('symbol', []).append(i)
-	duplicate_idx = [(k, v) for k, v in unique_idx.iteritems() if len(v) > 1]
-	for k, v in duplicate_idx:
-		combined_row = sgn_simmt.iloc[v,:].max(axis=0)
-		sgn_simmt.drop(k, axis=0, inplace=True)
-		pd.concat(sgn_simmt, combined_row)
+	excel_df, true_simmt = pd.read_csv(os.path.join(opts.loc, kwargs['sgn'])), io.read_df(os.path.join(opts.loc, kwargs['truesim']), with_idx=True, sparse_fmt=opts.spfmt)
+	col_name, sgn_simdfs, sgnsim_lbs, truesim_lb = kwargs['col_name'], kwargs['sgnsims'].split(SC), kwargs['sgnsim_lbs'].split(SC), kwargs['truesim_lb']
+	# Only compare the overlap symbols
+	sgn_symbols, gt_symbols = [str(x).lower() for x in excel_df[col_name]], [str(x).lower() for x in true_simmt.index]
+	true_simmt.index, true_simmt.columns = gt_symbols, gt_symbols
+	true_simmt = func.unique_rowcol(true_simmt, merge='sum')
+	true_simmt[true_simmt >= 0.5] = 1
+	true_simmt[true_simmt < 0.5] = 0
+	gt_symbols = [str(x).lower() for x in true_simmt.index]
+	overlaps = set(sgn_symbols) & set(gt_symbols)
+	olgt_symbols = [x for x in gt_symbols if x in overlaps]
+	olgt_simmt = true_simmt.loc[olgt_symbols, olgt_symbols]
+	roc_data, roc_labels = [], []
+	for sgn_simdf_f, sgnsim_lb in zip(sgn_simdfs, sgnsim_lbs):
+		sgn_simdf = io.read_df(os.path.join(opts.loc, sgn_simdf_f), with_idx=True, sparse_fmt=opts.spfmt).fillna(value=0).abs()
+		print 'Signature and ground truth similarity matrix size: %s, %s' % (sgn_simdf.shape, true_simmt.shape)
+		# Record the id map
+		sgn_simmt = sgn_simdf.as_matrix()
+		id_map = dict(zip(sgn_simdf.index, range(sgn_simdf.shape[0])))
+		# Find out the unique symbol and their signatures
+		unique_idx = {}
+		for id, symbol in zip(excel_df['id'], excel_df[col_name]):
+			unique_idx.setdefault(str(symbol).lower(), []).append(id_map[id])
+		for k, v in unique_idx.iteritems():
+			unique_idx[k] = np.array(v)
+		# Construct the predicted similarity matrix
+		pred_simmt = np.eye(len(olgt_symbols), dtype='float32')
+		for x, y in itertools.combinations(range(len(olgt_symbols)), 2):
+			# print olgt_symbols[x], olgt_symbols[y]
+			# print unique_idx[olgt_symbols[x]], unique_idx[olgt_symbols[y]]
+			# print sgn_simmt[unique_idx[olgt_symbols[x]],:][:,unique_idx[olgt_symbols[y]]]
+			pred_simmt[x, y] = pred_simmt[y, x] = min(1, sgn_simmt[unique_idx[olgt_symbols[x]],:][:,unique_idx[olgt_symbols[y]]].max())
+		print 'Ground truth and prediction size: %s, %s' % (olgt_simmt.shape, pred_simmt.shape)
+		io.write_spmt(olgt_simmt, 'truth_mt.npz', sparse_fmt=opts.spfmt, compress=True)
+		io.write_spmt(pred_simmt, 'pred_mt.npz', sparse_fmt=opts.spfmt, compress=True)
+		# Calculate the metrics
+		fpr, tpr, roc_auc, thrshd = metric.mltl_roc(olgt_simmt.as_matrix(), pred_simmt, average=opts.avg)
+		roc_data.append([fpr, tpr])
+		roc_labels.append('%s (AUC=%0.2f)' % (sgnsim_lb, roc_auc))
+	# Plot the figures
+	plot.plot_roc(roc_data, roc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='roc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=common_cfg)
+	# plot.plot_prc(prc_data, prc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='prc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=common_cfg)
 	
 	
 def cmp2sim():
@@ -855,6 +1019,8 @@ def main():
 	
 	if (opts.method is None):
 		return
+	elif (opts.method == 'fuseki'):
+		fuseki()
 	elif (opts.method == 'n2d'):
 		nt2db()
 	elif (opts.method == 'x2d'):
@@ -882,9 +1048,9 @@ def main():
 	elif (opts.method == 's2g'):
 		sgn2ge()
 	elif (opts.method == 's2d'):
-		sgn2deg()
+		sgn2dge()
 	elif (opts.method == 'd2s'):
-		deg2simmt()
+		dge2simmt()
 	elif (opts.method == 'simhrc'):
 		simhrc()
 	elif (opts.method == 'o2s'):
@@ -893,6 +1059,8 @@ def main():
 		ddi2simmt()
 	elif (opts.method == 'ppis'):
 		ppi2simmt()
+	elif (opts.method == 'sgne'):
+		sgn_eval()
 	elif (opts.method == 'c2s'):
 		cmp2sim()
 	elif (opts.method == 'csl'):
@@ -910,7 +1078,7 @@ if __name__ == '__main__':
 	op.add_option('-n', '--np', default=-1, action='store', type='int', dest='np', help='indicate the number of processes used for calculation')
 	op.add_option('-f', '--fmt', default='npz', help='data stored format: csv or npz [default: %default]')
 	op.add_option('-s', '--spfmt', default='csr', help='sparse data stored format: csr or csc [default: %default]')
-	op.add_option('-t', '--type', default='soft', help='file type: soft, xml, txt [default: %default]')
+	op.add_option('-t', '--type', default='xml', help='file type: soft, xml, txt [default: %default]')
 	op.add_option('-c', '--cfg', help='config string used in the utility functions, format: {\'param_name1\':param_value1[, \'param_name1\':param_value1]}')
 	op.add_option('-a', '--avg', default='micro', help='averaging strategy for performance metrics: micro or macro [default: %default]')
 	op.add_option('-i', '--unified', action='store_true', dest='unified', default=True, help='store the data in the same folder')

@@ -16,8 +16,10 @@ import ast
 import time
 import bisect
 import logging
+import operator
 import itertools
 import collections
+from shutil import copyfile
 from optparse import OptionParser
 
 import numpy as np
@@ -185,7 +187,7 @@ def simple_nn(input_dim=1, output_dim=1, backend='th', device='', session=None, 
 def gen_nnclfs(input_dim, output_dim, other_clfs=None, **kwargs):
 	def nnclfs(tuned=False, glb_filtnames=[], glb_clfnames=[]):
 		tuned = tuned or opts.best
-		common_cfg = cfgr('gse_extrc', 'common')
+		common_cfg = cfgr('gsx_extrc', 'common')
 		pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 		clf_names = []
 		for clf_name, clf in [
@@ -207,7 +209,7 @@ def gen_nnclfs(input_dim, output_dim, other_clfs=None, **kwargs):
 # Feature Filtering Models
 def gen_featfilt(tuned=False, glb_filtnames=[], **kwargs):
 	tuned = tuned or opts.best
-	common_cfg = cfgr('gse_extrc', 'common')
+	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 	filt_names = []
 	for filt_name, filter in [
@@ -240,7 +242,7 @@ def gen_featfilt(tuned=False, glb_filtnames=[], **kwargs):
 # Classification Models
 def gen_clfs(tuned=False, glb_clfnames=[], **kwargs):
 	tuned = tuned or opts.best
-	common_cfg = cfgr('gse_extrc', 'common')
+	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 	clf_names = []
 	for clf_name, clf in [
@@ -294,7 +296,7 @@ def gen_bm_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 # Combined Models	
 def gen_cb_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 	tuned = tuned or opts.best
-	common_cfg = cfgr('gse_extrc', 'common')
+	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 #	filtref_func = ftslct.filtref(os.path.join(spdr.DATA_PATH, 'X.npz'), os.path.join(spdr.DATA_PATH, 'union_filt_X.npz'))
 	for mdl_name, mdl in [
@@ -319,7 +321,7 @@ def gen_cb_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 def gen_nnclt_models(input_dim, output_dim, constraint_dim=0, batch_size=32, other_clts=None, **kwargs):
 	def nnclt(tuned=False, glb_filtnames=[], glb_cltnames=[], **kwargs):
 		tuned = tuned or opts.best
-		common_cfg = cfgr('gse_extrc', 'common')
+		common_cfg = cfgr('gsx_extrc', 'common')
 		pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 		clt_names = []
 		for clt_name, clt in [
@@ -341,7 +343,7 @@ def gen_nnclt_models(input_dim, output_dim, constraint_dim=0, batch_size=32, oth
 # Clustering model
 def gen_clt_models(tuned=False, glb_filtnames=[], glb_cltnames=[], **kwargs):
 	tuned = tuned or opts.best
-	common_cfg = cfgr('gse_extrc', 'common')
+	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 	clt_names = []
 	for clt_name, clt in [
@@ -361,7 +363,7 @@ def gen_clt_models(tuned=False, glb_filtnames=[], glb_cltnames=[], **kwargs):
 def gen_cbclt_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 	import hdbscan
 	tuned = tuned or opts.best
-	common_cfg = cfgr('gse_extrc', 'common')
+	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 	for mdl_name, mdl in [
 		# ('CNZ-DBSCAN', Pipeline([('distcalc', dstclc.gen_dstclc(dstclc.cns_dist, kw_args={'metric':'euclidean', 'C':kwargs.setdefault('constraint', None), 'a':0.4, 'n_jobs':opts.np})), ('clt', DBSCAN(metric='precomputed', n_jobs=opts.np))])),
@@ -379,7 +381,7 @@ def gen_cbclt_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 		
 # Models with parameter range
 def gen_nnmdl_params(input_dim, output_dim, rdtune=False):
-	common_cfg = cfgr('gse_extrc', 'common')
+	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 	if (rdtune):
 		for mdl_name, mdl, params in [
@@ -410,7 +412,7 @@ def gen_nnmdl_params(input_dim, output_dim, rdtune=False):
 
 # Models with parameter range
 def gen_mdl_params(rdtune=False):
-	common_cfg = cfgr('gse_extrc', 'common')
+	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 	if (rdtune):
 		for mdl_name, mdl, params in [
@@ -703,8 +705,14 @@ def _filt_ent(entities, onto_lb):
 	txt = nlp.clean_txt('\n'.join([e['word'] for e in entities]))
 	loc = np.cumsum([0] + [len(e['word']) + 1 for e in entities])
 	if (onto_lb == 'PRGE'):
-		df = hgnc.symbol_checker(txt).dropna()
-		time.sleep(3)
+		succeeded, trial_num = False, 0
+		while (not succeeded and trial_num < 20):
+			try:
+				df = hgnc.symbol_checker(txt).dropna()
+				succeeded = True
+			except RuntimeError as e:
+				trial_num += 1
+				time.sleep(5)
 		if (df.empty): return []
 		idx = [bisect.bisect_left(loc, txt.find(x)) for x in df['Input']]
 	elif (onto_lb == 'DISO'):
@@ -713,7 +721,7 @@ def _filt_ent(entities, onto_lb):
 		idx = [bisect.bisect_left(loc, loc_s) for loc_s in df['start']]
 	elif (onto_lb == 'CHED'):
 		c = rxnav.RxNavAPI('drugs')
-		idx = [i for i, e in enumerate(entities) if len(c.call(name=e['word'])['concept_group']) > 0]
+		idx = [i for i, e in enumerate(entities) if len(c.call(name=nlp.clean_txt(e['word']))['concept_group']) > 0]
 	else:
 		return entities
 	return [entities[i] for i in idx if i < len(entities)]
@@ -721,6 +729,8 @@ def _filt_ent(entities, onto_lb):
 	
 def gen_sgn():
 	global cfgr
+	common_cfg = cfgr('gsx_extrc', 'common')
+	sgn_cfg = cfgr('gsx_extrc', 'gen_sgn')
 
 	if (opts.mltl):
 		pid = -1
@@ -731,56 +741,110 @@ def gen_sgn():
 	if (opts.thrshd != 'mean' and opts.thrshd != 'min'):
 		opts.thrshd = float(ast.literal_eval(opts.thrshd))
 	
+	if (len(sgn_cfg) > 0):
+		method = sgn_cfg['method']
+		format = sgn_cfg['format']
+		sample_dir = os.path.join('.', 'samples') if sgn_cfg['sample_dir'] is None else sgn_cfg['sample_dir']
+		ge_dir = spdr.GEO_PATH if sgn_cfg['ge_dir'] is None else sgn_cfg['ge_dir']
+		dge_dir = spdr.GEO_PATH if sgn_cfg['dge_dir'] is None else sgn_cfg['dge_dir']
+	
 	## Load data for GSM and the association
 	Xs, Ys, labels, gsm2gse = load_data(type='sgn', pid=pid, fmt=opts.fmt, spfmt=opts.spfmt)
+	## Load GEO and GSM Documents
+	gse_docs, gsm_docs = spdr.get_geos(type='gse'), spdr.get_geos(type='gsm')
 	
 	## Generating GSM Cluster Pairs
 	pair_dfs = []
 	for i, (X, Y, z) in enumerate(zip(Xs, Ys, labels)):
 		lbid = i if (pid == -1) else pid
-		print 'Generating pairs of GSM sample clusters for dataset %i ...' % lbid
+		io.inst_print('Generating pairs of GSM sample clusters for dataset %i ...' % lbid)
 		pair_df = helper._gsmclt_pair(X, Y, z, gsm2gse, lbid, thrshd=opts.thrshd, cache_path=opts.cache)
 		pair_dfs.append(pair_df)
-		
-	## Load GEO and GSM Documents
-	gse_docs, gsm_docs = spdr.get_geos(type='gse'), spdr.get_geos(type='gsm')
+
 	## Generating Basic Signatures
 	presgn_dfs = []
 	for i, (X, Y, z, pair_df) in enumerate(zip(Xs, Ys, labels, pair_dfs)):
 		lbid = i if (pid == -1) else pid
-		print 'Generating the basic signatures for dataset %i ...' % lbid
-		platforms, organisms, tissues = [[] for x in range(3)]
-		for gse_id, ctrl_str, pert_str in zip(pair_df['geo_ids'], pair_df['ctrl_ids'], pair_df['pert_ids']):
-			gsm_doc_list = [gsm_docs[gsm_id][0] for gsm_id in ctrl_str.split('|') + pert_str.split('|')]
-			# Label the terms in the GEO documents that associated with each signature
-			pf_count, og_cout, ts_count = collections.Counter([doc['platform'] for doc in gsm_doc_list]).most_common(1), collections.Counter([doc['organism'] for doc in gsm_doc_list]).most_common(1), collections.Counter([doc['tissue'] for doc in gsm_doc_list if doc.has_key('tissue') and doc['tissue'] != ''] + [doc['tissue_type'] for doc in gsm_doc_list if doc.has_key('tissue_type') and doc['tissue_type'] != '']).most_common(1)
-			platforms.append(pf_count[0][0] if len(pf_count) > 0 else '')
-			organisms.append(og_cout[0][0] if len(og_cout) > 0 else '')
-			tissues.append(ts_count[0][0] if len(ts_count) > 0 else '')
-		columns = ['Platforms', 'Organisms', 'Tissues']
-		preannot_df = pd.DataFrame.from_items([(k, v) for k, v in zip(columns, [platforms, organisms, tissues])], columns=columns)
-		presgn_df = pd.concat([pair_df, preannot_df], axis=1, join_axes=[pair_df.index], copy=False)
-		presgn_dfs.append(presgn_df)
-		io.write_df(presgn_df, 'pre_sgn_%s.npz' % lbid, with_idx=True)
-		presgn_df.to_excel('pre_sgn_%s.xlsx' % lbid, encoding='utf8')
+		sgn_fname = 'pre_sgn_%s.npz' % lbid
+		cachef = os.path.join(opts.cache, sgn_fname)
+		if (os.path.exists(cachef)):
+			io.inst_print('Reading cache for basic signatures of dataset %i ...' % lbid)
+			presgn_dfs.append(io.read_df(cachef, with_idx=True))
+		else:
+			io.inst_print('Generating the basic signatures for dataset %i ...' % lbid)
+			platforms, organisms, tissues = [[] for x in range(3)]
+			for gse_id, ctrl_str, pert_str in zip(pair_df['geo_ids'], pair_df['ctrl_ids'], pair_df['pert_ids']):
+				gsm_doc_list = [gsm_docs[gsm_id][0] for gsm_id in ctrl_str.split('|') + pert_str.split('|')]
+				# Label the terms in the GEO documents that associated with each signature
+				pf_count, og_cout, ts_count = collections.Counter([doc['platform'] for doc in gsm_doc_list]).most_common(1), collections.Counter([doc['organism'] for doc in gsm_doc_list]).most_common(1), collections.Counter([doc['tissue'] for doc in gsm_doc_list if doc.has_key('tissue') and doc['tissue'] != ''] + [doc['tissue_type'] for doc in gsm_doc_list if doc.has_key('tissue_type') and doc['tissue_type'] != '']).most_common(1)
+				platforms.append(pf_count[0][0] if len(pf_count) > 0 else '')
+				organisms.append(og_cout[0][0] if len(og_cout) > 0 else '')
+				tissues.append(ts_count[0][0] if len(ts_count) > 0 else '')
+			columns = ['Platforms', 'Organisms', 'Tissues']
+			preannot_df = pd.DataFrame.from_items([(k, v) for k, v in zip(columns, [platforms, organisms, tissues])], columns=columns)
+			preannot_df.index = pair_df.index
+			presgn_df = pd.concat([pair_df, preannot_df], axis=1, join_axes=[pair_df.index], copy=False)
+			presgn_df.index.name = 'id'
+			io.write_df(presgn_df, 'pre_sgn_%s.npz' % lbid, with_idx=True)
+			presgn_df.to_excel('pre_sgn_%s.xlsx' % lbid, encoding='utf8')
+			presgn_dfs.append(presgn_df)
+		# Calculate the Differential Gene Expression
+		ds_lb = gse_docs[pair_df['geo_ids'][0]][1][0]
+		_label, _method = ds_lb.lower().replace(' ', '_'), method.lower().replace(' ', '_')
+		sample_path, ge_path, dge_path, dge_cache_path = os.path.join(sample_dir, format, _label, 'samples'), os.path.join(ge_dir, _label), os.path.join(dge_dir, _method, _label), os.path.join(dge_dir, 'cache', _label)
+		dge_filter_path, dge_cache_filter_path = os.path.join(dge_path, 'filtered'), os.path.join(dge_cache_path, 'filtered')
+		fs.mkdir(dge_filter_path), fs.mkdir(os.path.join(dge_cache_filter_path, _method))
+		io.inst_print('Calculating the gene expression for dataset %i ...' % lbid)
+		helper._sgn2ge(presgn_dfs[-1], sample_path, ge_path, format=format)
+		io.inst_print('Calculating the differential gene expression for dataset %i ...' % lbid)
+		dge_dfs = helper._sgn2dge(presgn_dfs[-1], method, ge_path, dge_path, dge_cache_path)
+		# Filter the pairs with low p-value
+		io.inst_print('Filtering the signatures for dataset %i according to the p-value of differential gene expression ...' % lbid)
+		pvalues = np.array([dge_df['pvalue'].min() for dge_df in dge_dfs])
+		selection = pvalues < (sgn_cfg['pval_thrshd'] if sgn_cfg.has_key('pval_thrshd') and sgn_cfg['pval_thrshd'] is not None else 0.05)
+		presgn_dfs[-1] = presgn_dfs[-1][selection]
+		orig_ids = np.arange(pvalues.shape[0])[selection]
+		orig_map = pd.DataFrame(orig_ids.reshape((-1,1)), index=presgn_dfs[-1].index, columns=['orig_idx'])
+		io.write_df(orig_map, 'orig_map.npz', with_idx=True)
+		# Set the index
+		presgn_dfs[-1].index = ['%s:%i' % (spdr.LABEL2ID[ds_lb], x) for x in range(presgn_dfs[-1].shape[0])]
+		for idx, orig_idx in enumerate(orig_ids):
+			dge_src = os.path.join(dge_path, 'dge_%i.npz' % orig_idx)
+			dge_dst = os.path.join(dge_filter_path, 'dge_%i.npz' % idx)
+			if (not os.path.exists(dge_dst)):
+				copyfile(dge_src, dge_dst)
+			dge_cache_src = os.path.join(dge_cache_path, _method, '%i.npz' % orig_idx)
+			dge_cache_dst = os.path.join(dge_cache_filter_path, _method, '%i.npz' % idx)
+			if (not os.path.exists(dge_cache_dst)):
+				copyfile(dge_cache_src, dge_cache_dst)
 	## Annotating Signatures
 	top_k = 3
 	cache_path = os.path.join(spdr.GEO_PATH, 'annot')
-	txt_fields = [['title', 'summary', 'keywords'], ['title', 'description', 'source', 'trait']]
+	txt_fields = [['title', 'summary', 'keywords'], ['title', 'description', 'data_processing', 'source', 'organism', 'treat_protocol', 'growth_protocol', 'extract_protocol', 'label_protocol', 'label', 'hybrid_protocol', 'trait']]
+	txtfield_importance = {'title':8, 'summary':4, 'keywords':7, 'description':4, 'data_processing':2, 'source':5, 'organism':5, 'treat_protocol':9, 'growth_protocol':4, 'extract_protocol':4, 'label_protocol':4, 'label':7, 'hybrid_protocol':4, 'trait':5}
 	sgn_dfs, annot_lists, common_annots, annot_dicts = [[] for x in range(4)]
 	for i, (X, Y, z, presgn_df) in enumerate(zip(Xs, Ys, labels, presgn_dfs)):
 		lbid = i if (pid == -1) else pid
-		sgn_fname = 'signature_%s' % lbid
+		sgn_fname = 'signature_%s.npz' % lbid
 		cachef = os.path.join(opts.cache, sgn_fname)
 		if (os.path.exists(cachef)):
-			sgn_dfs.append(io.read_df(cachef))
-			continue
-		print 'Annotating the signatures for dataset %i ...' % lbid
+			io.inst_print('Reading cache for annotated signatures of dataset %i ...' % lbid)
+			annot_list = io.read_obj(os.path.join(opts.cache, 'annot_list_%i.pkl' % lbid))
+			common_annot = io.read_obj(os.path.join(opts.cache, 'common_annot_%i.pkl' % lbid))
+			annot_dict = io.read_obj(os.path.join(opts.cache, 'annot_dict_%i.pkl' % lbid))
+			if (annot_list is not None and common_annot is not None and annot_dict is not None):
+				annot_lists.append(annot_list)
+				common_annots.append(common_annot)
+				annot_dicts.append(annot_dict)
+				sgn_dfs.append(io.read_df(cachef, with_idx=True))
+				continue
+		io.inst_print('Annotating the signatures for dataset %i ...' % lbid)
 		common_annot_list, annot_list = [[] for x in range(2)]
 		for gse_id, ctrl_str, pert_str in zip(presgn_df['geo_ids'], presgn_df['ctrl_ids'], presgn_df['pert_ids']):
-			gsm_annotres, annot_ents, annot_terms = [], {}, {}
+			gsm_annotres, annot_ents, annot_terms, annot_weights = [], {}, {}, {}
 			gsm_list = ctrl_str.split('|') + pert_str.split('|')
 			gse_doc, gsm_doc_list = gse_docs[gse_id][0], [gsm_docs[gsm_id][0] for gsm_id in gsm_list]
+			txt_field_maps = [0] + [1] * len(gsm_doc_list)
 			# Annotate the GSE document
 			gse_annotres = helper._annot_sgn(gse_id, gse_doc, txt_fields[0], cache_path=cache_path)
 			# Annotate the GSM document
@@ -788,15 +852,24 @@ def gen_sgn():
 				gsm_annotres.append(helper._annot_sgn(geo_id, geo_doc, txt_fields[1], cache_path=cache_path))
 			annot_list.append([gse_annotres] + gsm_annotres)
 			# Extract the annotated entities from the results, and classify them based on the annotation (modifier) type
-			for annotres in annot_list[-1]:
-				for annot_gp in annotres:
+			for annotres, tfmap in zip(annot_list[-1], txt_field_maps):
+				for annot_gp, txt_field in zip(annotres, txt_fields[tfmap]):
 					for annotype, entities in annot_gp.iteritems():
-						annot_ents.setdefault(annotype, []).extend([':'.join(entity['ids'] + [entity['word']]) for entity in entities])
-						annot_ents.setdefault('mdf_'+annotype, []).extend([entity['modifier'] for entity in entities if entity['modifier'] != ''])
+						annot_ent = [':'.join(entity['ids'] + [entity['word']]) for entity in entities]
+						annot_ents.setdefault(annotype, []).extend(annot_ent)
+						annot_weights.setdefault(annotype, []).extend([txtfield_importance[txt_field]] * len(annot_ent))
+						annot_mdf = [entity['modifier'] for entity in entities if entity['modifier'] != '']
+						annot_ents.setdefault('mdf_'+annotype, []).extend(annot_mdf)
+						annot_weights.setdefault('mdf_'+annotype, []).extend([txtfield_importance[txt_field]] * len(annot_mdf))
 			# Obtain the top (2) k most common entities for each annotation (modifier) type
 			for annotype, entities in annot_ents.iteritems():
+				if (len(entities) == 0): continue
+				annot_weight = dstclc.normdist(np.array(annot_weights[annotype]))
+				ent_array = np.array(entities)
+				annot_count = func.sorted_tuples([(k, annot_weight[np.where(ent_array == k)[0]].sum()) for k in set(entities)], key_idx=1)[::-1]
 				if (annotype.startswith('mdf_')):
-					annot_count = collections.Counter(entities).most_common(2)
+					# annot_count = collections.Counter(entities).most_common(2)
+					annot_count = annot_count[:2]
 					if (len(annot_count) > 1 and annot_count[0][1] == annot_count[1][1]):
 						annot_text = ' & '.join(sorted(zip(*annot_count[:2])[0]))
 					elif len(annot_count) > 0:
@@ -805,13 +878,16 @@ def gen_sgn():
 						annot_text = ''
 					annot_terms[annotype] = [annot_text]
 				else:
-					annot_count = collections.Counter(entities).most_common(top_k)
+					# annot_count = collections.Counter(entities).most_common(top_k)
+					annot_count = annot_count[:top_k]
 					annot_terms[annotype] = [x[0].split(':')[-1] for x in annot_count] if len(annot_count) > 0 else ['']
 			if (len(annot_terms) == 0):
 				print 'Unable to annotate signatures for GEO document %s !' % gse_id
 			common_annot_list.append(annot_terms)
 		annot_lists.append(annot_list)
+		io.write_obj(annot_list, 'annot_list_%i.pkl' % lbid)
 		common_annots.append(common_annot_list)
+		io.write_obj(common_annot_list, 'common_annot_%i.pkl' % lbid)
 		if (len(common_annot_list) == 0):
 			print 'Unable to annotate signatures, please check your network!'
 			continue
@@ -823,24 +899,34 @@ def gen_sgn():
 		for annotype in annotypes:
 			annot_dict[annotype].extend([annot_terms.setdefault(annotype, [''])[0] for annot_terms in common_annot_list])
 		annot_dicts.append(annot_dict)
+		io.write_obj(annot_dict, 'annot_dict_%i.pkl' % lbid)
 		annot_df = pd.DataFrame.from_items([(k, v) for k, v in annot_dict.iteritems() if len(v) == presgn_df.shape[0]])
+		annot_df.index = presgn_df.index
 		sgn_df = pd.concat([presgn_df, annot_df], axis=1, join_axes=[presgn_df.index], copy=False)
-		io.write_df(sgn_df, 'signature_%s.npz' % lbid)
+		io.write_df(sgn_df, 'signature_%s.npz' % lbid, with_idx=True)
 		sgn_df.to_excel('signature_%s.xlsx' % lbid, encoding='utf8')
 		sgn_dfs.append(sgn_df)
 	## Annotating the Gene, Disease, and Drug ontology
-	postsgn_dfs = []
+	postsgn_dfs, ontoid_cols, ontolb_cols = [[] for x in range(3)]
 	for i, (X, Y, z, annot_list, common_annot_list, sgn_df) in enumerate(zip(Xs, Ys, labels, annot_lists, common_annots, sgn_dfs)):
 		lbid = i if (pid == -1) else pid
-		print 'Annotating the ontology for dataset %i ...' % lbid
+		sgn_fname = 'post_sgn_%s.npz' % lbid
+		cachef = os.path.join(opts.cache, sgn_fname)
+		if (os.path.exists(cachef)):
+			io.inst_print('Reading cache for ontology-annotated signatures of dataset %i ...' % lbid)
+			postsgn_dfs.append(io.read_df(cachef, with_idx=True))
+			continue
+		io.inst_print('Annotating the ontology for dataset %i ...' % lbid)
 		# Read the ontology database
 		ds_lb = gse_docs[sgn_df['geo_ids'][0]][1][0]
 		onto_lb, ontodb_name = spdr.LABEL2ONTO[ds_lb], spdr.LABEL2DB[ds_lb]
-		onto_lang, idns, prdns, idprds, lbprds = spdr.DB2LANG[ontodb_name], getattr(ontology, spdr.DB2IDNS[ontodb_name]), [(ns.lower(), getattr(ontology, ns)) for ns in set(zip(*spdr.DB2PRDS[ontodb_name]['idprd'])[0])], dict([((prdn[0].lower(), prdn[1]), '_'.join(prdn)) for prdn in spdr.DB2PRDS[ontodb_name]['idprd']]), dict([((prdn[0].lower(), prdn[1]), '_'.join(prdn)) for prdn in spdr.DB2PRDS[ontodb_name]['lbprds']])
+		onto_lang, idns, prdns, idprds, lbprds = spdr.DB2LANG[ontodb_name], getattr(ontology, spdr.DB2IDNS[ontodb_name]), [(ns.lower(), getattr(ontology, ns)) for ns in dict(spdr.DB2PRDS[ontodb_name]['idprd']).keys()], dict([((prdn[0].lower(), prdn[1]), '_'.join(prdn)) for prdn in spdr.DB2PRDS[ontodb_name]['idprd']]), dict([((prdn[0].lower(), prdn[1]), '_'.join(prdn)) for prdn in spdr.DB2PRDS[ontodb_name]['lbprds']])
 		ontodb_path = os.path.join(spdr.ONTO_PATH, ontodb_name)
 		# Get the ontology graph
 		# ontog = ontology.get_db_graph(ontodb_path, db_name=ontodb_name, db_type='SQLAlchemy') # from rdflib db
-		ontog = sparql.SPARQL('http://localhost:8890/%s/query' % ontodb_name) # from Jena TDB
+		ontog = sparql.SPARQL('http://localhost:8890/%s/query' % ontodb_name, use_cache=common_cfg.setdefault('memcache', False)) # from Jena TDB
+		ontoid_cols.append(spdr.DB2IDN[ontodb_name])
+		ontolb_cols.append(spdr.DB2ONTON[ontodb_name])
 		ontoids, onto_labels = [[] for x in range(2)]
 		for gse_id, ctrl_str, pert_str, annotres_list, common_annot in zip(sgn_df['geo_ids'], sgn_df['ctrl_ids'], sgn_df['pert_ids'], annot_list, common_annot_list):
 			gsm_list = ctrl_str.split('|') + pert_str.split('|')
@@ -848,29 +934,39 @@ def gen_sgn():
 			annot_tkns, optional_tkns = [], []
 			txt_field_maps = [0] + [1] * len(gsm_doc_list)
 			# Only consider the summarized text fields of each GEO document
+			txt_lengths, txt_weights, opt_txt_lengths, opt_txt_weights = [[] for x in range(4)] # Record the boundary of different text fields and their weights
 			for annotres, geo_doc, tfmap in zip(annotres_list, [gse_doc] + gsm_doc_list, txt_field_maps):
 				for annot_gp, txt, txtfield in zip(annotres, [geo_doc[txt_field] for txt_field in txt_fields[tfmap]], txt_fields[tfmap]):
-					if not txtfield in ['title', 'keywords', 'trait']: continue
+					if (txt.isspace()): continue
+					txt_length = 0
 					init_tokens, locs = nlp.tokenize(txt, model='word', ret_loc=True)
+					if (locs is None or len(locs) == 0): continue
 					tokens, locs = nlp.del_punct(init_tokens, location=locs)
+					if (locs is None or len(locs) == 0): continue
 					start_loc, end_loc = zip(*locs)
 					entities = annot_gp.setdefault(onto_lb, [])
 					if (len(entities) > 0):
-						entities = _filt_ent(entities, onto_lb)
+						# entities = _filt_ent(entities, onto_lb)
 						# Only consider the top k most common annotation
 						# for entity in [x for x in entities if x['word'] in common_annot[onto_lb]]:
 						for entity in [x for x in entities]:
 							annot_tkns.append(entity['word'])
+							txt_length += (len(entity['word']) + 1)
 							# left_tkn_id = bisect.bisect_left(list(start_loc), int(entity['offset'])) - 1
 							# right_tkn_id = bisect.bisect_left(list(start_loc), int(entity['offset']) + len(entity['word']))
 							# print left_tkn_id, right_tkn_id, entity['offset'], locs
 							# Also consider a sliding window of the annotation terms to avoid inaccuracy of the annotation tool
 							# annot_tkns.extend([tokens[max(0, left_tkn_id)], entity['word'], entity['word'], entity['word'], tokens[min(len(tokens) - 1, right_tkn_id)]])
+						txt_lengths.append(txt_length)
+						txt_weights.append(txtfield_importance[txtfield])
 					if (onto_lb == 'PRGE' or onto_lb == 'DISO'):
 						optional_tkns.append(txt)
-			annot_txt = ' '.join(annot_tkns).strip()
+						opt_txt_lengths.append(len(txt) + 1)
+						opt_txt_weights.append(txtfield_importance[txtfield])
+			annot_txt = ' '.join(annot_tkns)
 			if (annot_txt.isspace()):
 				annot_txt = ' '.join(optional_tkns).strip()
+				txt_lengths, txt_weights = opt_txt_lengths, opt_txt_weights
 			if (annot_txt.isspace()):
 				ontoids.append('')
 				onto_labels.append('')
@@ -878,48 +974,75 @@ def gen_sgn():
 			#　Map the annotations to the ontology
 			onto_annotres = annot.annotonto(nlp.clean_txt(annot_txt), ontog, lang=onto_lang, idns=idns, prdns=prdns, idprds=idprds, dominant=True, lbprds=lbprds)
 			# Complementary of the ontology mapping using biological entities identification method
-			if (len(onto_annotres) == 0 and onto_lb == 'PRGE'):
-				hgnc_cachef = os.path.join(spdr.HGNC_PATH, '%s_hgnc.npz' % gse_id)
-				if (os.path.exists(hgnc_cachef)):
-					annot_df = io.read_df(hgnc_cachef)
-				else:
-					annot_df = hgnc.symbol_checker(txt, synonyms=True).dropna()
-					io.write_df(annot_df, hgnc_cachef, compress=True)
-				onto_annotres = zip(annot_df['HGNC ID'], annot_df['Approved symbol'], annot_df['Input'], annot_df['Location'])
-			if (len(onto_annotres) == 0 and onto_lb == 'DISO'):
-				dnorm_cachef = os.path.join(spdr.DNORM_PATH, '%s_dnorm.npz' % gse_id)
-				if (os.path.exists(dnorm_cachef)):
-					annot_df = io.read_df(dnorm_cachef)
-				else:
-					annot_df = dnorm.annot_dss(nlp.clean_txt(txt))
-					io.write_df(annot_df, dnorm_cachef, compress=True)
-				locations = zip(annot_df['start'], annot_df['end'])
-				onto_annotres = zip(annot_df['cid'], annot_df['concept'], [txt[start:end] for start, end in locations], locations)
 			if (len(onto_annotres) == 0):
+				annot_txt = ' '.join(optional_tkns).strip()
+				txt_lengths, txt_weights = opt_txt_lengths, opt_txt_weights
+				if (onto_lb == 'PRGE'):
+					hgnc_cachef = os.path.join(spdr.HGNC_PATH, '%s_hgnc.npz' % gse_id)
+					if (os.path.exists(hgnc_cachef)):
+						annot_df = io.read_df(hgnc_cachef)
+					else:
+						annot_df = hgnc.symbol_checker(annot_txt, synonyms=True).dropna()
+						io.write_df(annot_df, hgnc_cachef, compress=True)
+					onto_annotres = zip(annot_df['HGNC ID'], annot_df['Approved symbol'], annot_df['Input'], map(func.find_substr(annot_txt), annot_df['Input']))
+					ontoid_cols[-1] = 'hgnc_id'
+				if (onto_lb == 'DISO'):
+					dnorm_cachef = os.path.join(spdr.DNORM_PATH, '%s_dnorm.npz' % gse_id)
+					if (os.path.exists(dnorm_cachef)):
+						annot_df = io.read_df(dnorm_cachef)
+					else:
+						annot_df = dnorm.annot_dss(nlp.clean_txt(annot_txt))
+						io.write_df(annot_df, dnorm_cachef, compress=True)
+					locations = zip(annot_df['start'], annot_df['end'])
+					onto_annotres = zip(annot_df['cid'], annot_df['concept'], [annot_txt[start:end] for start, end in locations], locations)
+					ontoid_cols[-1] = 'dnorm_id'
+			onto_annot_res = zip(*onto_annotres)
+			if (len(onto_annotres) == 0 or len(onto_annot_res) == 0 or len(onto_annot_res[0]) == 0):
 				ontoids.append('')
 				onto_labels.append('')
 				continue
-			ids, labels, tokens, locs = zip(*onto_annotres)
+			ids, labels, tokens, locs = onto_annot_res
 			annotres_dict = dict(zip(ids, labels))
+			txt_bndry = np.cumsum(txt_lengths)
+			txt_normw = dstclc.normdist(np.array(txt_weights, dtype='float32'))
+			token_weights = np.array([txt_normw[txt_bndry.searchsorted(loc[0], side='right')] if loc[0] < len(annot_txt) else 0 for loc in locs])
+			id_array = np.array(ids)
+			annot_count = [(k, token_weights[np.where(id_array == k)[0]].sum()) for k in set(ids)]
 			# There might be several annotations with the same number
-			annot_count = collections.Counter(ids).most_common(10)
-			if (len(annot_count) == 0):
-				ontoids.append('')
-				onto_labels.append('')
-				continue
+			# annot_count = collections.Counter(ids).most_common(10)
+
 			# Find out the annotations with the most number, then sort them in alphabet order and pick the first one
-			annot_ids = sorted([x[0] for x in func.sorted_tuples(annot_count, key_idx=1) if x[1] == annot_count[0][1]])
+			max_count = max(map(operator.itemgetter(1), annot_count))
+			annot_ids = sorted([x[0] for x in func.sorted_tuples(annot_count, key_idx=1)[::-1] if x[1] == max_count])
 			annot_length = [(x, len(str(x))) for x in annot_ids]
 			annot_id = sorted([x[0] for x in func.sorted_tuples(annot_length, key_idx=1)])[0]
 			ontoids.append(annot_id)
 			onto_labels.append(annotres_dict[annot_id])
-		annot_df = pd.DataFrame.from_items([(spdr.DB2IDNS[ontodb_name], ontoids), ('ONTO_LABEL', onto_labels)])
+		annot_df = pd.DataFrame.from_items([(ontoid_cols[-1], ontoids), (ontolb_cols[-1], onto_labels)])
+		annot_df.index = sgn_df.index
 		postsgn_df = pd.concat([sgn_df, annot_df], axis=1, join_axes=[sgn_df.index], copy=False)
-		postsgn_df.index.name = 'id'
-		io.write_df(postsgn_df, 'post_sgn_%s.npz' % lbid)
+		# postsgn_df.index.name = 'id'
+		io.write_df(postsgn_df, 'post_sgn_%s.npz' % lbid, with_idx=True)
 		postsgn_df.to_excel('post_sgn_%s.xlsx' % lbid, encoding='utf8')
 		postsgn_dfs.append(postsgn_df)
-			
+	## Signature Filtering and Cleaning
+	for i, postsgn_df in enumerate(postsgn_dfs):
+		lbid = i if (pid == -1) else pid
+		io.inst_print('Cleaning the signatures for dataset %i ...' % lbid)
+		ds_lb = gse_docs[postsgn_df['geo_ids'][0]][1][0]
+		_label = ds_lb.lower().replace(' ', '_')
+		cln_sgn_df = postsgn_df.drop(postsgn_df.index[np.where(postsgn_df[ontolb_cols[i]] == '')[0]], axis=0)
+		# Create cell type column
+		cln_sgn_df['ANAT'] = [' '.join([mdf, x]) if x.startswith('cell') else x for mdf, x in zip(cln_sgn_df['mdf_ANAT'].fillna('').astype('str'), cln_sgn_df['ANAT'].fillna('').astype('str'))]
+		cln_sgn_df.rename(columns={'ANAT': 'cell_type'}, inplace=True)
+		cln_sgn_df.drop('mdf_ANAT', axis=1, inplace=True)
+		# Delete other useless columns
+		threshold = 0.5 * cln_sgn_df.shape[0]
+		del_cols = [col for col in cln_sgn_df.columns if np.where(cln_sgn_df[col] != '')[0].shape[0] < threshold]
+		cln_sgn_df.drop(del_cols, axis=1, inplace=True)
+		io.write_df(cln_sgn_df, '%s.npz' % _label, with_idx=True)
+		cln_sgn_df.to_excel('%s.xlsx' % _label, encoding='utf8')
+
 		
 def tuning(type='gse'):
 	if (type == 'gse'):
@@ -1079,6 +1202,10 @@ if __name__ == '__main__':
 				spdr.DNORM_PATH = spdr_cfg['DNORM_PATH']
 			if (spdr_cfg['RXNAV_PATH'] is not None and os.path.exists(spdr_cfg['RXNAV_PATH'])):
 				spdr.RXNAV_PATH = spdr_cfg['RXNAV_PATH']
+		hgnc_cfg = cfgr('bionlp.spider.hgnc', 'init')	
+		if (len(hgnc_cfg) > 0):
+			if (hgnc_cfg['MAX_TRIAL'] is not None and hgnc_cfg['MAX_TRIAL'] > 0):
+				hgnc.MAX_TRIAL = hgnc_cfg['MAX_TRIAL']
 		plot_cfg = cfgr('bionlp.util.plot', 'init')
 		plot_common = cfgr('bionlp.util.plot', 'common')
 		txtclf.init(plot_cfg=plot_cfg, plot_common=plot_common)

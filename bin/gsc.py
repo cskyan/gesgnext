@@ -20,7 +20,7 @@ import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.preprocessing import MultiLabelBinarizer, MinMaxScaler, Normalizer
 
-from bionlp.spider import geo, geoxml
+from bionlp.spider import geo
 from bionlp.util import fs, io, func, ontology
 from bionlp import nlp
 
@@ -42,13 +42,16 @@ SC=';;'
 LABEL2FILE = {'gene perturbation':'single_gene_perturbations-v1.0.csv', 'drug perturbation':'single_drug_perturbations-v1.0.csv', 'disease signature':'disease_signatures-v1.0.csv'}
 LABEL2ONTO = {'gene perturbation':'PRGE', 'drug perturbation':'CHED', 'disease signature':'DISO'}
 LABEL2DB = {'gene perturbation':'go', 'drug perturbation':'dbvocab', 'disease signature':'do'}
+LABEL2ID = {'gene perturbation':'gene', 'drug perturbation':'drug', 'disease signature':'dz'}
 
 DB2LANG = {'go':'', 'dron':'', 'do':'', 'dbvocab':'en'}
 DB2IDNS = {'go':'OBO', 'dron':'OBO', 'do':'OBO', 'dbvocab':'DBID'}
+DB2IDN = {'go':'go_id', 'dron':'dron_id', 'do':'do_id', 'dbvocab':'drugbank_id'}
+DB2ONTON = {'go':'gene_symbol', 'dron':'drug_name', 'do':'disease_name', 'dbvocab':'drug_name'}
 DB2PRDS = {'go':{'idprd':[('RDFS', 'label'), ('OBOWL', 'hasExactSynonym'), ('OBOWL', 'hasRelatedSynonym')], 'lbprds':[('RDFS', 'label')]}, 'dron':{'idprd':[('RDFS', 'label'), ('OBOWL', 'hasExactSynonym'), ('OBOWL', 'hasRelatedSynonym')], 'lbprds':[('RDFS', 'label')]}, 'do':{'idprd':[('RDFS', 'label'), ('OBOWL', 'hasExactSynonym'), ('OBOWL', 'hasRelatedSynonym')], 'lbprds':[('RDFS', 'label')]}, 'dbvocab':{'idprd':[('DBV', 'common-name'), ('DBV', 'term')], 'lbprds':[('DBV', 'common-name')]}}
 
 
-def get_geos(type='gse', fmt='soft'):
+def get_geos(type='gse', fmt='xml'):
 	geo_cachef = os.path.join(GEO_PATH, fmt, '%s_doc.pkl' % type)
 	if (os.path.exists(geo_cachef)):
 		return io.read_obj(geo_cachef)
@@ -69,6 +72,7 @@ def get_geos(type='gse', fmt='soft'):
 					else:
 						geo_docs[geo_id] = (geo_data, [lb])
 		else:
+			from bionlp.spider import geoxml as geo
 			if (type == 'gse'):
 				lb_folder = os.path.join(GEO_PATH, fmt, os.path.splitext(fname)[0])
 			elif (type == 'gsm'):

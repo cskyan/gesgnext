@@ -50,7 +50,7 @@ def gen_data_gse():
 	if (opts.local):
 		X, Y = spdr.get_data(None, type='gse', from_file=True)
 	else:
-		geo_docs = spdr.get_geos(type='gse', fmt='soft')
+		geo_docs = spdr.get_geos(type='gse', fmt='xml')
 		X, Y = spdr.get_data(geo_docs, type='gse', ft_type=opts.type, max_df=ast.literal_eval(opts.maxdf), min_df=ast.literal_eval(opts.mindf), fmt=opts.fmt, spfmt=opts.spfmt)
 
 	for i in range(Y.shape[1]):
@@ -65,7 +65,7 @@ def gen_data_gsm():
 	if (opts.local):
 		Xs, Ys, labels = spdr.get_data(None, type='gsm', from_file=True)
 	else:
-		geo_docs = spdr.get_geos(type='gsm', fmt='soft')
+		geo_docs = spdr.get_geos(type='gsm', fmt='xml')
 		Xs, Ys, labels = spdr.get_data(geo_docs, type='gsm', ft_type=opts.type, max_df=ast.literal_eval(opts.maxdf), min_df=ast.literal_eval(opts.mindf), fmt=opts.fmt, spfmt=opts.spfmt)
 		
 	# Feature Selection

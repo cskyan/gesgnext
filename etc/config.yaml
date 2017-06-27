@@ -1,7 +1,22 @@
-gse_extrc:
+gsx_extrc:
 - function: common
   params:
     mdl_cfg: mdlcfg
+    memcache: False
+- function: gen_sgn
+  params:
+    method: cd
+    format: xml
+    pval_thrshd: 0.1
+    sample_dir: 
+    ge_dir: 
+    dge_dir: 
+	
+gsx_helper:
+- function: common
+  params:
+    FUSEKI_ENV: 
+    FUSEKI_PATH: 
 
 bionlp.spider.gsc:
 - function: init
@@ -13,6 +28,11 @@ bionlp.spider.gsc:
     BIOGRID_PATH:
     HGNC_PATH:
     DNORM_PATH:
+	
+bionlp.spider.hgnc:
+- function: init
+  params:
+    MAX_TRIAL:
 
 bionlp.util.plot:
 - function: init
