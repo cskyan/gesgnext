@@ -26,7 +26,7 @@ import scipy as sp
 import pandas as pd
 
 from bionlp.spider import annot, sparql
-from bionlp.util import fs, io, func, plot, ontology, shell
+from bionlp.util import fs, io, func, plot, ontology, shell, njobs
 from bionlp import dstclc, nlp, metric
 from bioinfo.ext import chdir, limma
 # from bionlp import txtclt
@@ -36,18 +36,19 @@ import gsc
 FILE_DIR = os.path.dirname(os.path.realpath(__file__))
 PAR_DIR = os.path.abspath(os.path.join(FILE_DIR, os.path.pardir))
 CONFIG_FILE = os.path.join(PAR_DIR, 'etc', 'config.yaml')
+RAMSIZE = 4
 SC=';;'
 
 opts, args = {}, []
-common_cfg = {}
+cfgr, plot_common_cfg = None, {}
 
 
 def init_plot(plot_cfg={}, plot_common={}):
 	if (len(plot_cfg) > 0 and plot_cfg['MON'] is not None):
 		plot.MON = plot_cfg['MON']
-	global common_cfg
+	global plot_common_cfg
 	if (len(plot_common) > 0):
-		common_cfg = plot_common
+		plot_common_cfg = plot_common
 
 		
 def fuseki(sh='bash'):
@@ -106,7 +107,7 @@ def download():
 	if (opts.unified):
 		saved_path = os.path.join(par_dir, opts.type) if opts.output is None else os.path.join(opts.output, opts.type)
 	else:
-		saved_path = os.path.join(par_dir, basename) if opts.output is None else os.path.join(opts.output, basename)
+		saved_path = os.path.join(par_dir, opts.type, basename) if opts.output is None else os.path.join(opts.output, opts.type, basename)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	if (opts.type == 'soft'):
 		from bionlp.spider import geo
@@ -115,7 +116,7 @@ def download():
 	else:
 		from bionlp.spider import geoxml as geo
 		geo_strs = list(geo.fetch_geo(list(excel_df['geo_id']), saved_path=saved_path, **kwargs))
-		geo_strios = [cStringIO.StringIO(str) for str in geo_strs]
+		geo_strios = [cStringIO.StringIO(geo_str) for geo_str in geo_strs]
 		geo_docs = geo.parse_geos(geo_strios)
 		samples = [sample for geo_doc in geo_docs for sample in geo_doc['samples']]
 		for sample_str in geo.fetch_geo(samples, saved_path=os.path.join(saved_path, 'samples'), **kwargs):
@@ -436,25 +437,38 @@ def sgn2dge():
 	cache_path = os.path.join(par_dir, 'dge', 'cache', basename) if opts.output is None else os.path.join(opts.output, 'cache', basename)
 	if (os.path.isdir(os.path.join(saved_path, 'filtered'))):
 		print 'Filtered data exists in save path: %s\nPlease move them to the original folder!' % saved_path
-		exists(-1)
+		exit(-1)
 	elif (os.path.isdir(os.path.join(cache_path, 'filtered'))):
 		print 'Filtered data exists in cache path: %s\nPlease move them to the original folder!' % cache_path
-		exists(-1)
+		exit(-1)
 	# Extract the control group and perturbation group of each gene expression signature
 	_sgn2dge(excel_df, method, ge_path, saved_path, cache_path)
 		
 
 def _ji(a, b):
-	if (len(a) == 0 and len(b) == 0): return 0
-	return 1.0 * len(a & b) / (len(a) + len(b) - len(a & b))
+	a_sum, b_sum = a.sum(), b.sum()
+	if (a_sum == 0 and b_sum == 0): return 1
+	ab_sum = (a & b).sum()
+	return 1.0 * ab_sum / (a_sum + b_sum - ab_sum)
+	
+def _wji(a, b):
+	max_sum = np.max((a,b), axis=0).sum()
+	if (max_sum == 0): return 1
+	min_sum = np.min((a,b), axis=0).sum()
+	return 1.0 * min_sum / max_sum
 	
 def _sji(a, b):
 	return (_ji(a[0], b[0]) + _ji(a[1], b[1]) - _ji(a[0], b[1]) - _ji(a[1], b[0])) / 2
 	
+def _swji(a, b):
+	return (_wji(a[0], b[0]) + _wji(a[1], b[1]) - _wji(a[0], b[1]) - _wji(a[1], b[0])) / 2
+
 def _sjiv(X, Y):
 	def _ji(a, b):
-		if (len(a) == 0 and len(b) == 0): return 0
-		return 1.0 * len(a & b) / (len(a) + len(b) - len(a & b))
+		a_sum, b_sum = a.sum(), b.sum()
+		if (a_sum == 0 and b_sum == 0): return 0
+		ab_sum = (a & b).sum()
+		return 1.0 * ab_sum / (a_sum + b_sum - ab_sum)
 	def _sji(a, b):
 		return (_ji(a[0], b[0]) + _ji(a[1], b[1]) - _ji(a[0], b[1]) - _ji(a[1], b[0])) / 2
 	import numpy as np
@@ -464,16 +478,25 @@ def _sjiv(X, Y):
 	for i, j in itertools.product(range(shape[0]), range(shape[1])):
 		simmt[i, j] = _sji(X[i], Y[j])
 	return simmt
-	
+
 def _sjic(X, Y):
 	Y_T = Y.T
 	interaction = np.tensordot(X, Y, axes=[[-1],[-1]]).transpose(range(len(X.shape)-1)+range(len(X.shape)-1, len(X.shape)+len(Y.shape)-2)[::-1]) # XY' shape of (m, 2, 2, n)
 	union = np.tensordot(X, np.ones((X.shape[-1], X.shape[-2])), axes=1).reshape(X.shape[:-1] + (X.shape[-2], 1)).repeat(Y.shape[0], axis=-1) + np.tensordot(Y, np.ones((Y.shape[-1], Y.shape[-2])), axes=1).reshape(Y.shape[:-1] + (Y.shape[-2], 1)).repeat(X.shape[0], axis=-1).T - interaction # XI+IY'-XY'
 	r = 1.0 * interaction / union
 	s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[1],[0]]).reshape((X.shape[0], Y.shape[0])) # sum reduction
-	return s
+	return s / 2.0
 	
-def _sjim(X, Y, signed=True):
+	
+def _jim_t(X, Y, signed=True):
+	shape = X.shape[0] / 2, Y.shape[0] / 2
+	simmt = np.ones(shape)
+	for i, j in itertools.product(range(shape[0]), range(shape[1])):
+		simmt[i, j] = _sji([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]])
+	return simmt
+	
+	
+def _jim(X, Y, signed=True):
 	Y_T = Y.T
 	interaction = X.dot(Y_T) # XY' shape of (2m, 2n)
 	# union = X.sum(axis=1).reshape((-1, 1)).repeat(Y.shape[0], axis=1) + Y_T.sum(axis=0).reshape((1, -1)).repeat(X.shape[0], axis=0) - interaction
@@ -485,9 +508,80 @@ def _sjim(X, Y, signed=True):
 		s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
 	else:
 		s = np.tensordot(np.tensordot(np.array([[1,0]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[0]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
+	return s / 2.0
+
+
+def _wjim_t(X, Y, signed=True):
+	shape = X.shape[0] / 2, Y.shape[0] / 2
+	simmt = np.ones(shape)
+	for i, j in itertools.product(range(shape[0]), range(shape[1])):
+		simmt[i, j] = _swji([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]])
+	return simmt
+
+	
+def _wjim(X, Y, signed=True):
+	_X = X.reshape((X.shape[0], 1, X.shape[1])).repeat(Y.shape[0], axis=1)
+	_Y = Y.reshape((1, Y.shape[0], Y.shape[1])).repeat(X.shape[0], axis=0)
+	min_tensor = _X * (_X <= _Y).astype('int8') + _Y * (_Y < _X).astype('int8')
+	interaction = np.tensordot(min_tensor, np.ones(X.shape[1]), axes=[[2],[0]]).reshape((X.shape[0], Y.shape[0])) # SUM<0:k>[min(X_i,Y_i)]
+	del min_tensor
+	max_tensor = _X * (_X >= _Y).astype('int8') + _Y * (_Y > _X).astype('int8')
+	union = np.tensordot(max_tensor, np.ones(X.shape[1]), axes=[[2],[0]]).reshape((X.shape[0], Y.shape[0])) # SUM<0:k>[max(X_i,Y_i)]
+	del max_tensor
+	r = 1.0 * interaction / union
+	r = r.reshape((r.shape[0]/2, 2, r.shape[1]/2, 2))
+	# Sum reduction
+	if (signed):
+		s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
+	else:
+		s = np.tensordot(np.tensordot(np.array([[1,0]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[0]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
+	return s / 2.0
+	
+	
+def _wjim_iter_1d(X, Y, signed=True, ramsize=1):
+	transposed = X.shape[0] < Y.shape[0]
+	X, Y = (Y, X) if transposed else (X, Y)
+	splitted_tasks = njobs.split_1d(Y.shape[0]/2, task_size=4*(6*X.shape[0]*X.shape[1]*2), split_size=ramsize*1024**3)
+	st_str = '[%s]' % ', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks, return_counts=True))))[::-1]])
+	io.inst_print('The tasks are divided into the grid of size: %s' % st_str)
+	task_results, task_idx = [], np.cumsum([0]+splitted_tasks)
+	for i in range(len(splitted_tasks)):
+		sub_Y = Y[2*task_idx[i]:2*task_idx[i+1]]
+		task_results.append(_wjim(X, sub_Y, signed=signed))
+	s = np.concatenate(task_results, axis=-1)
+	s = s.T if transposed else s
 	return s
 	
-		
+	
+def _wjim_iter_2d(X, Y, signed=True, ramsize=1):
+	shape = (X.shape[0]/2, Y.shape[0]/2)
+	splitted_tasks = njobs.split_2d(shape, task_size=4*(6*X.shape[1]*4), split_size=ramsize*1024**3)
+	st_str = '[[%s], [%s]]' % (', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]), ', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]))
+	io.inst_print('The tasks are divided into the grid of size: %s' % st_str)
+	task_results, task_idx = [], [np.cumsum([0]+splitted_tasks[0]), np.cumsum([0]+splitted_tasks[1])]
+	for i in range(len(splitted_tasks[0])):
+		sub_X = X[2*task_idx[0][i]:2*task_idx[0][i+1]]
+		subtask_results = []
+		for j in range(len(splitted_tasks[1])):
+			sub_Y = Y[2*task_idx[1][j]:2*task_idx[1][j+1]]
+			subtask_results.append(_wjim(sub_X, sub_Y, signed=signed))
+		task_results.append(np.concatenate(subtask_results, axis=-1))
+	return np.concatenate(task_results, axis=0).reshape(shape)
+	
+	
+def _wjim_iter_2d_mltp(X, Y, signed=True, ramsize=1, n_jobs=1):
+	shape = (X.shape[0]/2, Y.shape[0]/2)
+	splitted_tasks = njobs.split_2d(shape, task_size=4*(6*X.shape[1]*4), split_size=ramsize/n_jobs*1024**3)
+	st_str = '[[%s], [%s]]' % (', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]), ', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]))
+	io.inst_print('The tasks are divided into the grid of size: %s' % st_str)
+	task_results, task_idx = [], [np.cumsum([0]+splitted_tasks[0]), np.cumsum([0]+splitted_tasks[1])]
+	for i in range(len(splitted_tasks[0])):
+		sub_X = X[2*task_idx[0][i]:2*task_idx[0][i+1]]
+		subtask_results = njobs.run_pool(_wjim, n_jobs=n_jobs, dist_param=['Y'], X=sub_X, Y=[Y[2*task_idx[1][j]:2*task_idx[1][j+1]] for j in range(len(splitted_tasks[1]))], signed=signed)
+		task_results.append(np.concatenate(subtask_results, axis=-1))
+	return np.concatenate(task_results, axis=0).reshape(shape)
+
+
 def dge2simmt():
 	# from sklearn.externals.joblib import Parallel, delayed
 	from sklearn.metrics import pairwise
@@ -497,24 +591,29 @@ def dge2simmt():
 	method = kwargs.setdefault('method', 'cd')
 	_method = method.lower()
 	basenames, input_exts = zip(*[os.path.splitext(os.path.basename(loc)) for loc in locs])
-	if (input_exts[0] == '.csv'):
+	if (input_exts[0] == '.xlsx'):
+		excel_dfs = [pd.read_excel(loc) for loc in locs]
+	elif (input_exts[0] == '.csv'):
 		excel_dfs = [pd.read_csv(loc) for loc in locs]
 	elif (input_exts[0] == '.npz'):
 		excel_dfs = [io.read_df(loc) for loc in locs]
 	dge_dir = kwargs.setdefault('dge_dir', os.path.join(gsc.GEO_PATH, 'dge'))
-	simmt_file = os.path.join(dge_dir, 'simmt.npz')
+	simmt_file = os.path.join(dge_dir, _method, 'simmt.npz')
 	idx_cols = kwargs.setdefault('idx_cols', 'disease_name;;drug_name;;gene_symbol').split(SC)
 	cache_f = os.path.join(opts.cache, 'udgene.pkl')
 	signed = True if (int(kwargs.setdefault('signed', 1)) == 1) else False
+	weighted = True if (int(kwargs.setdefault('weighted', 1)) == 1) else False
 	# Read the data
 	if (os.path.exists(cache_f)):
 		io.inst_print('Reading cache...')
 		ids, id_bndry = io.read_obj(cache_f)
 		if (not os.path.exists(simmt_file)):
 			udgene_spmt = io.read_spmt(os.path.splitext(cache_f)[0]+'.npz')
+			if (weighted):
+				pvalue_spmt = io.read_spmt(os.path.splitext(cache_f)[0]+'_pval.npz')
 	else:
 		io.inst_print('Preparing data...')
-		ids, id_bndry, udgene = [[] for i in range(3)]
+		ids, id_bndry, udgene, pvaldict = [[] for i in range(4)]
 		# Read all the differentially expressed genes vector of each collection
 		for basename, excel_df, idx_col in zip(basenames, excel_dfs, idx_cols):
 			dge_path = os.path.join(dge_dir, _method, basename)
@@ -528,12 +627,28 @@ def dge2simmt():
 			for i in xrange(len(sgn_ids)):
 				dge_df = io.read_df(os.path.join(dge_path, 'dge_%i.npz' % i), with_idx=True)
 				if (hasattr(dge_df, 'pvalue')):
-					dge_df.drop(dge_df.index[np.where(dge_df['pvalue'] < (opts.thrshd if (type(opts.thrshd) is float) else 0.05))[0]], axis=0)
+					dge_df.drop(dge_df.index[np.where(dge_df['pvalue'] > (opts.thrshd if (type(opts.thrshd) is float) else 0.05))[0]], axis=0, inplace=True)
+				else:
+					dge_df['pvalue'] = pd.Series(0.05 * np.ones(dge_df.shape[0]), index=dge_df.index)
 				udgene.append((set(dge_df.index[np.where(dge_df.iloc[:,0] > 0)[0]]), set(dge_df.index[np.where(dge_df.iloc[:,0] < 0)[0]])))
+				if (weighted):
+					pvaldict.append((dict([(gene, dge_df['pvalue'][gene]) for gene in udgene[-1][0]]), dict([(gene, dge_df['pvalue'][gene]) for gene in udgene[-1][1]])))
 		unrolled_udgene = func.flatten_list(udgene)
+		if (weighted):
+			unrolled_pvaldict = func.flatten_list(pvaldict)
 		# Transform the up-down regulate gene expression data into binary matrix
 		mlb = MultiLabelBinarizer(sparse_output=True)
 		udgene_spmt = mlb.fit_transform(unrolled_udgene).astype('int8')
+		if (not sp.sparse.isspmatrix_csr(udgene_spmt)):
+			udgene_spmt = udgene_spmt.tocsr()
+		# Construct the corresponding pvalue matrix
+		if (weighted):
+			pval_data = []
+			for i, offset in enumerate(udgene_spmt.indptr[:-1]):
+				cum_num = udgene_spmt.indptr[i + 1]
+				pval_data.extend([unrolled_pvaldict[i][mlb.classes_[j]] for j in udgene_spmt.indices[offset:cum_num]])
+			pvalue_spmt = sp.sparse.csr_matrix((pval_data, udgene_spmt.indices, udgene_spmt.indptr), shape=udgene_spmt.shape)
+			io.write_spmt(pvalue_spmt, os.path.splitext(cache_f)[0]+'_pval.npz', sparse_fmt='csr', compress=True)
 		io.write_spmt(udgene_spmt, os.path.splitext(cache_f)[0]+'.npz', sparse_fmt='csr', compress=True)
 		id_bndry = np.cumsum([0] + id_bndry).tolist()
 		io.write_obj([ids, id_bndry], cache_f)
@@ -549,12 +664,26 @@ def dge2simmt():
 			# similarity = _sji(udgene[i], udgene[j])
 			# simmt.iloc[i, j] = similarity
 			# simmt.iloc[j, i] = similarity
-		udgene_spmt = udgene_spmt.astype('float32') # Numpy only support parallelism for float32/64
-		udgene_mt = udgene_spmt.toarray()
+			
+		if (weighted):
+			udgene_mt = sp.sparse.csr_matrix((pvalue_spmt.data * udgene_spmt.data, udgene_spmt.indices, udgene_spmt.indptr), shape=udgene_spmt.shape).astype('float32').toarray()
+			del pvalue_spmt
+		else:
+			udgene_spmt = udgene_spmt.astype('float32') # Numpy only support parallelism for float32/64
+			udgene_mt = udgene_spmt.toarray()
 		del udgene_spmt
+		
+		
 		# Parallel method
-		# similarity = dstclc.parallel_pairwise(udgene_mt, None, _sjim, n_jobs=opts.np, min_chunksize=2)
-		similarity = _sjim(udgene_mt, udgene_mt, signed=signed)
+		# similarity = dstclc.parallel_pairwise(udgene_mt, None, _jim, n_jobs=opts.np, min_chunksize=2)
+		
+		# Weighted method
+		# sim_method = _wjim_iter_1d if (weighted) else _jim
+		# similarity = sim_method(udgene_mt, udgene_mt, signed=signed)
+		
+		# Parallel weighted method
+		similarity = _wjim_iter_2d_mltp(udgene_mt, udgene_mt, signed=signed, ramsize=RAMSIZE, n_jobs=opts.np)
+		
 		# Tensor data structure
 		# udgene_cube = udgene_mt.reshape((-1, 2, udgene_mt.shape[1]))
 		# similarity = _sjic(udgene_cube, udgene_cube)
@@ -855,8 +984,8 @@ def sgn_eval():
 		roc_data.append([fpr, tpr])
 		roc_labels.append('%s (AUC=%0.2f)' % (sgnsim_lb, roc_auc))
 	# Plot the figures
-	plot.plot_roc(roc_data, roc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='roc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=common_cfg)
-	# plot.plot_prc(prc_data, prc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='prc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=common_cfg)
+	plot.plot_roc(roc_data, roc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='roc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=plot_common_cfg)
+	# plot.plot_prc(prc_data, prc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='prc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=plot_common_cfg)
 	
 	
 def cmp2sim():
@@ -871,7 +1000,7 @@ def cmp2sim():
 	fpr, tpr, roc_auc, thrshd = metric.list_roc(y_true, y_pred, average=opts.avg)
 	roc_labels = ['%s (AUC=%0.2f)' % (sim1_lb, roc_auc)]
 	roc_data = [[mean_fpr, mean_tpr]]
-	plot.plot_roc(roc_data, roc_labels, fname='roc_%s_' % (sim0_lb, sim1_l), plot_cfg=common_cfg)
+	plot.plot_roc(roc_data, roc_labels, fname='roc_%s_' % (sim0_lb, sim1_l), plot_cfg=plot_common_cfg)
 	
 	
 def cmp_sim_list():
@@ -891,7 +1020,7 @@ def cmp_sim_list():
 	fpr, tpr, roc_auc, thrshd = metric.list_roc(y_true, y_pred, average=opts.avg)
 	roc_labels = ['%s (AUC=%0.2f)' % (sim_lb, roc_auc)]
 	roc_data = [[fpr, tpr]]
-	plot.plot_roc(roc_data, roc_labels, fname='roc_%s_%s' % (sim_lb, rankl_lb), plot_cfg=common_cfg)
+	plot.plot_roc(roc_data, roc_labels, fname='roc_%s_%s' % (sim_lb, rankl_lb), plot_cfg=plot_common_cfg)
 	
 	
 def plot_clt(is_fuzzy=False, threshold='0.5'):
@@ -1081,7 +1210,7 @@ if __name__ == '__main__':
 	op.add_option('-t', '--type', default='xml', help='file type: soft, xml, txt [default: %default]')
 	op.add_option('-c', '--cfg', help='config string used in the utility functions, format: {\'param_name1\':param_value1[, \'param_name1\':param_value1]}')
 	op.add_option('-a', '--avg', default='micro', help='averaging strategy for performance metrics: micro or macro [default: %default]')
-	op.add_option('-i', '--unified', action='store_true', dest='unified', default=True, help='store the data in the same folder')
+	op.add_option('-i', '--unified', action='store_true', dest='unified', default=False, help='store the data in the same folder')
 	op.add_option('-l', '--loc', default='.', help='the files in which location to be process')
 	op.add_option('-o', '--output', help='the path to store the data')
 	op.add_option('-u', '--fuzzy', action='store_true', dest='fuzzy', default=False, help='use fuzzy clustering')
@@ -1112,6 +1241,10 @@ if __name__ == '__main__':
 				gsc.RXNAV_PATH = gsc_cfg['RXNAV_PATH']
 			if (gsc_cfg['BIOGRID_PATH'] is not None and os.path.exists(gsc_cfg['BIOGRID_PATH'])):
 				gsc.BIOGRID_PATH = gsc_cfg['BIOGRID_PATH']
+		common_cfg = cfgr('gsx_helper', 'common')
+		if (len(common_cfg) > 0):
+			if (common_cfg.has_key('RAMSIZE') and common_cfg['RAMSIZE'] is not None):
+				RAMSIZE = common_cfg['RAMSIZE']
 		plot_cfg = cfgr('bionlp.util.plot', 'init')
 		plot_common = cfgr('bionlp.util.plot', 'common')
 		init_plot(plot_cfg=plot_cfg, plot_common=plot_common)
