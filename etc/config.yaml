@@ -17,6 +17,7 @@ gsx_helper:
   params:
     FUSEKI_ENV: 
     FUSEKI_PATH: 
+	RAMSIZE: 4
 
 bionlp.spider.gsc:
 - function: init
