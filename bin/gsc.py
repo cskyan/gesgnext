@@ -304,6 +304,7 @@ def get_data_gsm(geo_docs, from_file=None, ft_type='tfidf', max_df=1.0, min_df=1
 		Xs.append(sub_X)
 		Ys.append(sub_Y)
 		labels.append(sub_label)
+		del [sub_X, sub_Y, sub_label]
 		
 	return Xs, Ys, labels
 	
