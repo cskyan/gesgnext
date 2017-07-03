@@ -773,7 +773,7 @@ def gen_sgn():
 		else:
 			io.inst_print('Generating the basic signatures for dataset %i ...' % lbid)
 			platforms, organisms, tissues = [[] for x in range(3)]
-			for gse_id, ctrl_str, pert_str in zip(pair_df['geo_ids'], pair_df['ctrl_ids'], pair_df['pert_ids']):
+			for gse_id, ctrl_str, pert_str in zip(pair_df['geo_id'], pair_df['ctrl_ids'], pair_df['pert_ids']):
 				gsm_doc_list = [gsm_docs[gsm_id][0] for gsm_id in ctrl_str.split('|') + pert_str.split('|')]
 				# Label the terms in the GEO documents that associated with each signature
 				pf_count, og_cout, ts_count = collections.Counter([doc['platform'] for doc in gsm_doc_list]).most_common(1), collections.Counter([doc['organism'] for doc in gsm_doc_list]).most_common(1), collections.Counter([doc['tissue'] for doc in gsm_doc_list if doc.has_key('tissue') and doc['tissue'] != ''] + [doc['tissue_type'] for doc in gsm_doc_list if doc.has_key('tissue_type') and doc['tissue_type'] != '']).most_common(1)
@@ -789,7 +789,7 @@ def gen_sgn():
 			presgn_df.to_excel('pre_sgn_%s.xlsx' % lbid, encoding='utf8')
 			presgn_dfs.append(presgn_df)
 		# Calculate the Differential Gene Expression
-		ds_lb = gse_docs[pair_df['geo_ids'][0]][1][0]
+		ds_lb = gse_docs[pair_df['geo_id'][0]][1][0]
 		_label, _method = ds_lb.lower().replace(' ', '_'), method.lower().replace(' ', '_')
 		sample_path, ge_path, dge_path, dge_cache_path = os.path.join(sample_dir, format, _label, 'samples'), os.path.join(ge_dir, _label), os.path.join(dge_dir, _method, _label), os.path.join(dge_dir, 'cache', _label)
 		dge_filter_path, dge_cache_filter_path = os.path.join(dge_path, 'filtered'), os.path.join(dge_cache_path, 'filtered')
@@ -820,8 +820,8 @@ def gen_sgn():
 	## Annotating Signatures
 	top_k = 3
 	cache_path = os.path.join(spdr.GEO_PATH, 'annot')
-	txt_fields = [['title', 'summary', 'keywords'], ['title', 'description', 'data_processing', 'source', 'organism', 'treat_protocol', 'growth_protocol', 'extract_protocol', 'label_protocol', 'label', 'hybrid_protocol', 'trait']]
-	txtfield_importance = {'title':8, 'summary':4, 'keywords':7, 'description':4, 'data_processing':2, 'source':5, 'organism':5, 'treat_protocol':9, 'growth_protocol':4, 'extract_protocol':4, 'label_protocol':4, 'label':7, 'hybrid_protocol':4, 'trait':5}
+	txt_fields = [['title', 'summary', 'keywords'], ['title', 'description', 'source', 'organism', 'treat_protocol', 'trait']]
+	txtfield_importance = {'title':8, 'summary':4, 'keywords':7, 'description':4, 'source':5, 'organism':5, 'treat_protocol':9, 'trait':5}
 	sgn_dfs, annot_lists, common_annots, annot_dicts = [[] for x in range(4)]
 	for i, (X, Y, z, presgn_df) in enumerate(zip(Xs, Ys, labels, presgn_dfs)):
 		lbid = i if (pid == -1) else pid
@@ -840,7 +840,7 @@ def gen_sgn():
 				continue
 		io.inst_print('Annotating the signatures for dataset %i ...' % lbid)
 		common_annot_list, annot_list = [[] for x in range(2)]
-		for gse_id, ctrl_str, pert_str in zip(presgn_df['geo_ids'], presgn_df['ctrl_ids'], presgn_df['pert_ids']):
+		for gse_id, ctrl_str, pert_str in zip(presgn_df['geo_id'], presgn_df['ctrl_ids'], presgn_df['pert_ids']):
 			gsm_annotres, annot_ents, annot_terms, annot_weights = [], {}, {}, {}
 			gsm_list = ctrl_str.split('|') + pert_str.split('|')
 			gse_doc, gsm_doc_list = gse_docs[gse_id][0], [gsm_docs[gsm_id][0] for gsm_id in gsm_list]
@@ -918,7 +918,7 @@ def gen_sgn():
 			continue
 		io.inst_print('Annotating the ontology for dataset %i ...' % lbid)
 		# Read the ontology database
-		ds_lb = gse_docs[sgn_df['geo_ids'][0]][1][0]
+		ds_lb = gse_docs[sgn_df['geo_id'][0]][1][0]
 		onto_lb, ontodb_name = spdr.LABEL2ONTO[ds_lb], spdr.LABEL2DB[ds_lb]
 		onto_lang, idns, prdns, idprds, lbprds = spdr.DB2LANG[ontodb_name], getattr(ontology, spdr.DB2IDNS[ontodb_name]), [(ns.lower(), getattr(ontology, ns)) for ns in dict(spdr.DB2PRDS[ontodb_name]['idprd']).keys()], dict([((prdn[0].lower(), prdn[1]), '_'.join(prdn)) for prdn in spdr.DB2PRDS[ontodb_name]['idprd']]), dict([((prdn[0].lower(), prdn[1]), '_'.join(prdn)) for prdn in spdr.DB2PRDS[ontodb_name]['lbprds']])
 		ontodb_path = os.path.join(spdr.ONTO_PATH, ontodb_name)
@@ -928,7 +928,7 @@ def gen_sgn():
 		ontoid_cols.append(spdr.DB2IDN[ontodb_name])
 		ontolb_cols.append(spdr.DB2ONTON[ontodb_name])
 		ontoids, onto_labels = [[] for x in range(2)]
-		for gse_id, ctrl_str, pert_str, annotres_list, common_annot in zip(sgn_df['geo_ids'], sgn_df['ctrl_ids'], sgn_df['pert_ids'], annot_list, common_annot_list):
+		for gse_id, ctrl_str, pert_str, annotres_list, common_annot in zip(sgn_df['geo_id'], sgn_df['ctrl_ids'], sgn_df['pert_ids'], annot_list, common_annot_list):
 			gsm_list = ctrl_str.split('|') + pert_str.split('|')
 			gse_doc, gsm_doc_list = gse_docs[gse_id][0], [gsm_docs[gsm_id][0] for gsm_id in gsm_list]
 			annot_tkns, optional_tkns = [], []
@@ -1029,11 +1029,11 @@ def gen_sgn():
 	for i, postsgn_df in enumerate(postsgn_dfs):
 		lbid = i if (pid == -1) else pid
 		io.inst_print('Cleaning the signatures for dataset %i ...' % lbid)
-		ds_lb = gse_docs[postsgn_df['geo_ids'][0]][1][0]
+		ds_lb = gse_docs[postsgn_df['geo_id'][0]][1][0]
 		_label = ds_lb.lower().replace(' ', '_')
 		cln_sgn_df = postsgn_df.drop(postsgn_df.index[np.where(postsgn_df[ontolb_cols[i]] == '')[0]], axis=0)
 		# Create cell type column
-		cln_sgn_df['ANAT'] = [' '.join([mdf, x]) if x.startswith('cell') else x for mdf, x in zip(cln_sgn_df['mdf_ANAT'].fillna('').astype('str'), cln_sgn_df['ANAT'].fillna('').astype('str'))]
+		cln_sgn_df['ANAT'] = [' '.join([mdf, x]) if x.startswith('cell') else x for mdf, x in zip(map(nlp.clean_txt, cln_sgn_df['mdf_ANAT'].fillna('')), map(nlp.clean_txt, cln_sgn_df['ANAT'].fillna('')))]
 		cln_sgn_df.rename(columns={'ANAT': 'cell_type'}, inplace=True)
 		cln_sgn_df.drop('mdf_ANAT', axis=1, inplace=True)
 		# Delete other useless columns
