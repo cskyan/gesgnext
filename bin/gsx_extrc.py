@@ -36,6 +36,7 @@ from sklearn.linear_model import LogisticRegression, RidgeClassifier, SGDClassif
 from sklearn.svm import SVC, LinearSVC
 from sklearn.neural_network import MLPClassifier
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier, BaggingClassifier, AdaBoostClassifier, GradientBoostingClassifier
+from xgboost import XGBClassifier
 from sklearn.cluster import DBSCAN, AgglomerativeClustering
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.multiclass import OneVsRestClassifier
@@ -71,7 +72,7 @@ def load_data(type='gse', pid=-1, fmt='npz', spfmt='csr'):
 			if (pid == -1):
 				Xs, Ys, _ = spdr.get_data(None, type='gsm', from_file=True, fmt=fmt, spfmt=spfmt)
 			else:
-				Xs, Ys, _ = spdr.get_mltl_npz(type='gsm', lbs=['%i_%i' % (int(pid/2), int(pid%2))], spfmt=spfmt)
+				Xs, Ys, _ = spdr.get_mltl_npz(type='gsm', lbs=[pid], spfmt=spfmt) if opts.mltl else spdr.get_mltl_npz(type='gsm', lbs=['%i_%i' % (int(pid/2), int(pid%2))], spfmt=spfmt)
 			return Xs, Ys
 		elif (type == 'gsm-clt'):
 			if (pid == -1):
@@ -105,12 +106,12 @@ def get_gsm2gse(data_path):
 	return io.read_df(os.path.join(data_path, 'gsm2gse.npz'), with_idx=True)
 
 
-def build_model(mdl_func, mdl_t, mdl_name, tuned=False, pr=None, mltl=False, **kwargs):
+def build_model(mdl_func, mdl_t, mdl_name, tuned=False, pr=None, mltl=False, mltp=True, **kwargs):
 	if (tuned and bool(pr)==False):
 		print 'Have not provided parameter writer!'
 		return None
 	if (mltl):
-		return OneVsRestClassifier(mdl_func(**func.update_dict(pr(mdl_t, mdl_name) if tuned else {}, kwargs)), n_jobs=opts.np)
+		return OneVsRestClassifier(mdl_func(**func.update_dict(pr(mdl_t, mdl_name) if tuned else {}, kwargs)), n_jobs=opts.np) if (mltp) else OneVsRestClassifier(mdl_func(**func.update_dict(pr(mdl_t, mdl_name) if tuned else {}, kwargs)))
 	else:
 		return mdl_func(**func.update_dict(pr(mdl_t, mdl_name) if tuned else {}, kwargs))
 
@@ -253,12 +254,16 @@ def gen_clfs(tuned=False, glb_clfnames=[], **kwargs):
 #		('NearestCentroid', NearestCentroid()),
 #		('BernoulliNB', BernoulliNB()),
 #		('MultinomialNB', MultinomialNB()),
-#		('ExtraTrees', build_model(ExtraTreesClassifier, 'Classifier', 'Extra Trees', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=opts.np)),
 		('RandomForest', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=1 if opts.mltl else opts.np, random_state=0)),
+		('ExtraTrees', build_model(ExtraTreesClassifier, 'Classifier', 'Extra Trees', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=opts.np)),
 #		('RandomForest', Pipeline([('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, n_jobs=opts.np, random_state=0))])),
 #		('BaggingkNN', BaggingClassifier(KNeighborsClassifier(), max_samples=0.5, max_features=0.5, n_jobs=1 if opts.mltl else opts.np, random_state=0)),
-#		('BaggingLinearSVC', build_model(BaggingClassifier, 'Classifier', 'Bagging LinearSVC', tuned=tuned, pr=pr, mltl=opts.mltl, base_estimator=build_model(LinearSVC, 'Classifier', 'LinearSVC', tuned=tuned, pr=pr, mltl=opts.mltl, loss='squared_hinge', dual=False), n_jobs=1 if opts.mltl else opts.np, random_state=0)(LinearSVC(), max_samples=0.5, max_features=0.5)),
+#		('BaggingLinearSVC', build_model(BaggingClassifier, 'Classifier', 'Bagging LinearSVC', tuned=tuned, pr=pr, mltl=opts.mltl, base_estimator=build_model(LinearSVC, 'Classifier', 'LinearSVC', tuned=tuned, pr=pr, mltl=opts.mltl, loss='squared_hinge', dual=False), max_samples=0.5, max_features=0.5, n_jobs=1 if opts.mltl else opts.np, random_state=0)),
 #		('LinSVM', build_model(LinearSVC, 'Classifier', 'LinearSVC', tuned=tuned, pr=pr, mltl=opts.mltl, loss='squared_hinge', dual=False)),
+		('AdaBoost', build_model(AdaBoostClassifier, 'Classifier', 'AdaBoost', tuned=tuned, pr=pr, mltl=opts.mltl)),
+		('GradientBoosting', build_model(GradientBoostingClassifier, 'Classifier', 'GBoost', tuned=tuned, pr=pr, mltl=opts.mltl)),
+		# ('XGBoost', build_model(XGBClassifier, 'Classifier', 'XGBoost', tuned=tuned, pr=pr, mltl=opts.mltl, mltp=False, n_jobs=opts.np)),
+		# ('XGBoost', build_model(XGBClassifier, 'Classifier', 'XGBoost', tuned=tuned, pr=pr, mltl=opts.mltl, mltp=False, nthread=opts.np)),
 		('RbfSVM', build_model(SVC, 'Classifier', 'RBF SVM', tuned=tuned, pr=pr, mltl=opts.mltl))
 	]:
 		yield clf_name, clf
@@ -300,11 +305,16 @@ def gen_cb_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 #	filtref_func = ftslct.filtref(os.path.join(spdr.DATA_PATH, 'X.npz'), os.path.join(spdr.DATA_PATH, 'union_filt_X.npz'))
 	for mdl_name, mdl in [
+		('UDT-RF', Pipeline([('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=1 if opts.mltl else opts.np, random_state=0))])),
+		('UDT-ET', Pipeline([('clf', build_model(ExtraTreesClassifier, 'Classifier', 'Extra Trees', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=opts.np))])),
+		('UDT-AB', Pipeline([('clf', build_model(AdaBoostClassifier, 'Classifier', 'AdaBoost', tuned=tuned, pr=pr, mltl=opts.mltl))])),
+		('UDT-GB', Pipeline([('clf', build_model(GradientBoostingClassifier, 'Classifier', 'GBoost', tuned=tuned, pr=pr, mltl=opts.mltl))])),
+		('UDT-RbfSVM', Pipeline([('clf', build_model(SVC, 'Classifier', 'RBF SVM', tuned=tuned, pr=pr, mltl=opts.mltl, probability=True))])),
 		# ('RandomForest', Pipeline([('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=1 if opts.mltl else opts.np, random_state=0))])),
-		('UDT-RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.utopk, filtfunc=ftslct.decision_tree, k=500, fn=100)), ('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=1 if opts.mltl else opts.np, random_state=0))])),
+		# ('UDT-RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.utopk, filtfunc=ftslct.decision_tree, k=200, fn=100)), ('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=1 if opts.mltl else opts.np, random_state=0))])),
+		# ('UDT-RF', Pipeline([('featfilt', ftslct.MSelectOverValue(ftslct.filtref(os.path.join(spdr.DATA_PATH, 'gsm_X_0.npz'), os.path.join(spdr.DATA_PATH, 'udt200', 'gsm_X_0.npz')))), ('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=1 if opts.mltl else opts.np, random_state=0))])),
 		# ('RandomForest', Pipeline([('featfilt', SelectFromModel(DecisionTreeClassifier(criterion='entropy', class_weight='balanced', random_state=0))), ('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=1 if opts.mltl else opts.np, random_state=0))])),
 		# ('DF-RbfSVM', Pipeline([('featfilt', ftslct.MSelectOverValue(ftslct.filtref(os.path.join(spdr.DATA_PATH, 'X.npz'), os.path.join(spdr.DATA_PATH, 'union_filt_X.npz'), os.path.join(spdr.DATA_PATH, 'orig_X.npz')))), ('clf', build_model(SVC, 'Classifier', 'RBF SVM', tuned=tuned, pr=pr, mltl=opts.mltl, probability=True))])),
-		('RbfSVM', Pipeline([('clf', build_model(SVC, 'Classifier', 'RBF SVM', tuned=tuned, pr=pr, mltl=opts.mltl, probability=True))])),
 		# ('L1-LinSVC', Pipeline([('clf', build_model(LinearSVC, 'Classifier', 'LinearSVC', tuned=tuned, pr=pr, mltl=opts.mltl, loss='squared_hinge', dual=False))])),
 		# ('Perceptron', Pipeline([('clf', build_model(Perceptron, 'Classifier', 'Perceptron', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=1 if opts.mltl else opts.np))])),
 		# ('MNB', Pipeline([('clf', build_model(MultinomialNB, 'Classifier', 'MultinomialNB', tuned=tuned, pr=pr, mltl=opts.mltl))])),
@@ -312,7 +322,12 @@ def gen_cb_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 		# ('MEM', Pipeline([('clf', build_model(LogisticRegression, 'Classifier', 'Logistic Regression', tuned=tuned, pr=pr, mltl=opts.mltl, dual=False))])),
 		# ('LinearSVC with L2 penalty [Ft Filt] & Perceptron [CLF]', Pipeline([('featfilt', SelectFromModel(build_model(LinearSVC, 'Feature Selection', 'LinearSVC', tuned=tuned, pr=pr, mltl=opts.mltl, loss='squared_hinge', dual=False, penalty='l2'))), ('clf', build_model(Perceptron, 'Classifier', 'Perceptron', tuned=tuned, pr=pr, n_jobs=opts.np))])),
 		# ('ExtraTrees', Pipeline([('clf', build_model(ExtraTreesClassifier, 'Classifier', 'Extra Trees', tuned=tuned, pr=pr, mltl=opts.mltl, n_jobs=opts.np))])),
-#		('Random Forest', Pipeline([('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, n_jobs=opts.np, random_state=0))]))
+#		('Random Forest', Pipeline([('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest', tuned=tuned, pr=pr, n_jobs=opts.np, random_state=0))])),
+		# ('AdaBoost', Pipeline([('clf', build_model(AdaBoostClassifier, 'Classifier', 'AdaBoost', tuned=tuned, pr=pr, mltl=opts.mltl))])),
+		# ('GradientBoosting', Pipeline([('clf', build_model(GradientBoostingClassifier, 'Classifier', 'GBoost', tuned=tuned, pr=pr, mltl=opts.mltl))])),
+		# ('XGBoost', Pipeline([('clf', build_model(XGBClassifier, 'Classifier', 'XGBoost', tuned=tuned, pr=pr, mltl=opts.mltl, mltp=False, n_jobs=opts.np))])),
+		# ('XGBoost', Pipeline([('clf', build_model(XGBClassifier, 'Classifier', 'XGBoost', tuned=tuned, pr=pr, mltl=opts.mltl, mltp=False, nthread=opts.np))])),
+		# ('RbfSVM', Pipeline([('clf', build_model(SVC, 'Classifier', 'RBF SVM', tuned=tuned, pr=pr, mltl=opts.mltl, probability=True))]))
 	]:
 		yield mdl_name, mdl
 		
@@ -361,7 +376,10 @@ def gen_clt_models(tuned=False, glb_filtnames=[], glb_cltnames=[], **kwargs):
 		
 		
 def gen_cbclt_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
-	import hdbscan
+	try:
+		import hdbscan
+	except Exception as e:
+		print e
 	tuned = tuned or opts.best
 	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
@@ -386,20 +404,20 @@ def gen_nnmdl_params(input_dim, output_dim, rdtune=False):
 	if (rdtune):
 		for mdl_name, mdl, params in [
 			('Neural Network', gen_keras(input_dim, output_dim, model='tunable'), {
-				'param_grid':dict(
+				'param_space':dict(
 					internal_dim=np.logspace(6, 9, num=4, base=2, dtype='int'),
 					layer_num=np.logspace(2, 6, num=5, base=2, dtype='int'),
 					dropout_ratio=np.logspace(-0.301, 0, num=10).tolist(),
 					init=['uniform', 'glorot_normal', 'glorot_uniform', 'he_normal', 'he_uniform'],
 					activation=['tanh', 'sigmoid', 'hard_sigmoid', 'relu', 'linear', 'softplus', 'softsign']),
-				'n_iter':30
+				'n_iter':32
 			})
 		]:
 			yield mdl_name, mdl, params
 	else:
 		for mdl_name, mdl, params in [
 			('Neural Network', gen_keras(input_dim, output_dim, model='tunable'), {
-				'param_grid':dict(
+				'param_space':dict(
 					internal_dim=np.logspace(6, 9, num=4, base=2, dtype='int'),
 					layer_num=np.logspace(2, 6, num=5, base=2, dtype='int'),
 					dropout_ratio=np.logspace(-0.301, 0, num=10).tolist(),
@@ -411,192 +429,164 @@ def gen_nnmdl_params(input_dim, output_dim, rdtune=False):
 
 
 # Models with parameter range
-def gen_mdl_params(rdtune=False):
+def gen_mdl_params():
 	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
-	if (rdtune):
-		for mdl_name, mdl, params in [
-			# ('Logistic Regression', LogisticRegression(dual=False), {
-				# 'param_dist':dict(
-					# penalty=['l1', 'l2'],
-					# C=np.logspace(-5, 5, 11),
-					# tol=np.logspace(-6, 3, 10)),
-				# 'n_iter':30
-			# }),
-			# ('LinearSVC', LinearSVC(dual=False), {
-				# 'param_dist':dict(
-					# penalty=['l1', 'l2'],
-					# C=np.logspace(-5, 5, 11),
-					# tol=np.logspace(-6, 3, 10)),
-				# 'n_iter':30
-			# }),
-			# ('Perceptron', Perceptron(), {
-				# 'param_dist':dict(
-					# alpha=np.logspace(-6, 3, 10),
-					# n_iter=stats.randint(3, 20)),
-				# 'n_iter':30
-			# }),
-			# ('MultinomialNB', MultinomialNB(), {
-				# 'param_dist':dict(
-					# alpha=np.logspace(-6, 3, 10),
-					# fit_prior=[True, False]),
-				# 'n_iter':30
-			# }),
-			# ('SVM', SVC(), {
-				# 'param_dist':dict(
-					# kernel=['linear', 'rbf', 'poly'],
-					# C=np.logspace(-5, 5, 11),
-					# gamma=np.logspace(-6, 3, 10)),
-				# 'n_iter':30
-			# }),
-			# ('Extra Trees', ExtraTreesClassifier(random_state=0), {
-				# 'param_dist':dict(
-					# n_estimators=[50, 100] + range(200, 1001, 200),
-					# max_features=np.linspace(0.5, 1, 6).tolist()+['sqrt', 'log2'],
-					# min_samples_leaf=[1]+range(10, 101, 10),
-					# class_weight=['balanced', None]),
-				# 'n_iter':30
-			# }),
-			('Random Forest', RandomForestClassifier(random_state=0), {
-				'param_dist':dict(
-					n_estimators=[50, 100] + range(200, 1001, 200),
-					max_features=np.linspace(0.5, 1, 6).tolist()+['sqrt', 'log2'],
-					max_depth=[None] + range(10,101,10),
-					min_samples_leaf=[1]+range(10, 101, 10),
-					class_weight=['balanced', None]),
-				'n_iter':30
-			}),
-			# ('Bagging MNB', BaggingClassifier(base_estimator=MultinomialNB(), random_state=0), {
-				# 'param_dist':dict(
-					# n_estimators=[20, 50, 100] + range(200, 601, 200),
-					# max_samples=np.linspace(0.5, 1, 6),
-					# max_features=np.linspace(0.5, 1, 6),
-					# bootstrap=[True, False],
-					# bootstrap_features=[True, False]),
-				# 'n_iter':30
-			# }),
-			# ('AdaBoost MNB', AdaBoostClassifier(base_estimator=MultinomialNB(), algorithm='SAMME', random_state=0), {
-				# 'param_dist':dict(
-					# n_estimators=[20, 50, 100] + range(200, 601, 200),
-					# learning_rate=np.linspace(0.5, 1, 6)),
-				# 'n_iter':30
-			# }),
-			# ('GBoost', GradientBoostingClassifier(random_state=0), {
-				# 'param_dist':dict(
-					# n_estimators=[20, 50, 100] + range(200, 601, 200),
-					# subsample = np.linspace(0.5, 1, 6),
-					# max_features=np.linspace(0.5, 1, 6).tolist()+['sqrt', 'log2'],
-					# min_samples_leaf=[1]+range(10, 101, 10),
-					# learning_rate=np.linspace(0.5, 1, 6),
-					# loss=['deviance', 'exponential']),
-				# 'n_iter':30
-			# }),
-			# ('UGSS & RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.utopk, filtfunc=ftslct.gss_coef, fn=4000)), ('clf', RandomForestClassifier())]), {
-				# 'param_dist':dict(
-					# featfilt__k=np.logspace(np.log2(250), np.log2(32000), 8, base=2).astype('int')),
-				# 'n_iter':8
-			# })
-		]:
-			yield mdl_name, mdl, params
-	else:
-		for mdl_name, mdl, params in [
-			# ('Logistic Regression', LogisticRegression(dual=False), {
-				# 'param_grid':dict(
-					# penalty=['l1', 'l2'],
-					# C=np.logspace(-5, 5, 11),
-					# tol=np.logspace(-6, 3, 10))
-			# }),
-			# ('LinearSVC', LinearSVC(dual=False), {
-				# 'param_grid':dict(
-					# penalty=['l1', 'l2'],
-					# C=np.logspace(-5, 5, 11),
-					# tol=np.logspace(-6, 3, 10))
-			# }),
-			# ('Perceptron', Perceptron(), {
-				# 'param_grid':dict(
-					# alpha =np.logspace(-5, 5, 11),
-					# n_iter=range(3, 20, 3))
-			# }),
-			# ('MultinomialNB', MultinomialNB(), {
-				# 'param_grid':dict(
-					# alpha=np.logspace(-6, 3, 10),
-					# fit_prior=[True, False])
-			# }),
-			# ('SVM', SVC(), {
-				# 'param_grid':dict(
-					# kernel=['linear', 'rbf', 'poly'],
-					# C=np.logspace(-5, 5, 11),
-					# gamma=np.logspace(-6, 3, 10))
-			# }),
-			# ('Extra Trees', ExtraTreesClassifier(random_state=0), {
-				# 'param_grid':dict(
-					# n_estimators=[50, 100] + range(200, 1001, 200),
-					# max_features=np.linspace(0.5, 1, 6).tolist()+['sqrt', 'log2'],
-					# min_samples_leaf=[1]+range(10, 101, 10),
-					# class_weight=['balanced', None])
-			# }),
-			('Random Forest', RandomForestClassifier(random_state=0), {
-				'param_grid':dict(
-					n_estimators=[50, 100] + range(200, 1001, 200),
-					max_features=np.linspace(0.5, 1, 6).tolist()+['sqrt', 'log2'],
-					max_depth=[None] + range(10,101,10),
-					min_samples_leaf=[1]+range(10, 101, 10),
-					class_weight=['balanced', None])
-			}),
-			# ('Bagging MNB', BaggingClassifier(base_estimator=MultinomialNB(), random_state=0), {
-				# 'param_grid':dict(
-					# n_estimators=[50, 100] + range(200, 1001, 200),
-					# max_samples=np.linspace(0.5, 1, 6),
-					# max_features=np.linspace(0.5, 1, 6),
-					# bootstrap=[True, False],
-					# bootstrap_features=[True, False])
-			# }),
-			# ('AdaBoost MNB', AdaBoostClassifier(base_estimator=MultinomialNB(), algorithm='SAMME', random_state=0), {
-				# 'param_grid':dict(
-					# n_estimators=[50, 100] + range(200, 1001, 200),
-					# learning_rate=np.linspace(0.5, 1, 6))
-			# }),
-			# ('GBoost', GradientBoostingClassifier(random_state=0), {
-				# 'param_grid':dict(
-					# n_estimators=[50, 100] + range(200, 1001, 200),
-					# subsample = np.linspace(0.5, 1, 6),
-					# max_features=np.linspace(0.5, 1, 6).tolist()+['sqrt', 'log2'],
-					# min_samples_leaf=[1]+range(10, 101, 10),
-					# learning_rate = np.linspace(0.5, 1, 6),
-					# loss=['deviance', 'exponential'])
-			# }),
-			# ('UDT & RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.utopk, filtfunc=ftslct.decision_tree, fn=4000)), ('clf', RandomForestClassifier())]), {
-				# 'param_grid':dict(
-					# featfilt__k=np.logspace(np.log2(250), np.log2(32000), 8, base=2).astype('int'))
-			# }),
-			# ('DT & RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.decision_tree)), ('clf', RandomForestClassifier())]), {
-				# 'param_grid':dict(
-					# featfilt__k=np.logspace(np.log2(250), np.log2(32000), 8, base=2).astype('int'))
-			# }),
-			# ('UNGL & RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.utopk, filtfunc=ftslct.ngl_coef, fn=4000)), ('clf', RandomForestClassifier())]), {
-				# 'param_grid':dict(
-					# featfilt__k=np.logspace(np.log2(250), np.log2(32000), 8, base=2).astype('int'))
-			# }),
-			# ('NGL & RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.ngl_coef)), ('clf', RandomForestClassifier())]), {
-				# 'param_grid':dict(
-					# featfilt__k=np.logspace(np.log2(250), np.log2(32000), 8, base=2).astype('int'))
-			# }),
-			# ('UGSS & RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.utopk, filtfunc=ftslct.gss_coef, fn=4000)), ('clf', RandomForestClassifier())]), {
-				# 'param_grid':dict(
-					# featfilt__k=np.logspace(np.log2(250), np.log2(32000), 8, base=2).astype('int'))
-			# }),
-			# ('GSS & RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.gss_coef)), ('clf', RandomForestClassifier())]), {
-				# 'param_grid':dict(
-					# featfilt__k=np.logspace(np.log2(250), np.log2(32000), 8, base=2).astype('int'))
-			# })
-		]:
-			yield mdl_name, mdl, params
+	for mdl_name, mdl, params in [
+		('Random Forest', RandomForestClassifier(random_state=0), {
+			'struct': True,
+			'param_names': ['n_estimators', 'max_features', 'max_depth', 'min_samples_leaf', 'class_weight'],
+			'param_space': {'class_weight':dict(zip(['balanced', 'None'],
+				[func.update_dict(x, y) for x, y in
+				zip([dict(), dict()],
+				[dict(
+				n_estimators=[50, 1000],
+				max_features=[0.5, 1],
+				max_depth=[1, 100],
+				min_samples_leaf=[1, 100]
+				)] * 2
+				)]))},
+			'n_iter':32
+		}),
+		# ('Random Forest', RandomForestClassifier(random_state=0), {
+			# 'param_space':dict(
+				# n_estimators=[50, 1000],
+				# max_features=[0.5, 1],
+				# max_depth=[1, 100],
+				# min_samples_leaf=[1, 100]),
+			# 'n_iter':32
+		# }),
+		# ('Extra Trees', ExtraTreesClassifier(random_state=0), {
+			# 'struct': True,
+			# 'param_names': ['n_estimators', 'max_features', 'max_depth', 'min_samples_leaf', 'class_weight'],
+			# 'param_space': {'class_weight':dict(zip(['balanced', 'None'],
+				# [func.update_dict(x, y) for x, y in
+				# zip([dict(), dict()],
+				# [dict(
+				# n_estimators=[50, 1000],
+				# max_features=[0.5, 1],
+				# max_depth=[1, 100],
+				# min_samples_leaf=[1, 100]
+				# )] * 2
+				# )]))},
+			# 'n_iter':32
+		# }),
+		# ('Extra Trees', ExtraTreesClassifier(random_state=0), {
+			# 'param_space':dict(
+				# n_estimators=[50, 1000],
+				# max_features=[0.5, 1],
+				# max_depth=[1, 100],
+				# min_samples_leaf=[1, 100]),
+			# 'n_iter':32
+		# }),
+		# ('GBoostOVR', OneVsRestClassifier(GradientBoostingClassifier(random_state=0)), {
+			# 'struct': True,
+			# 'param_names': ['estimator__n_estimators', 'estimator__subsample', 'estimator__max_features', 'estimator__max_depth', 'estimator__min_samples_leaf', 'estimator__learning_rate', 'estimator__loss'],
+			# 'param_space': {'loss':dict(zip(['deviance', 'exponential'],
+				# [func.update_dict(x, y) for x, y in
+				# zip([dict(), dict()],
+				# [dict(
+				# estimator__n_estimators=[20, 600],
+				# estimator__subsample=[0.5, 1],
+				# estimator__max_features=[0.5, 1],
+				# estimator__max_depth=[1, 100],
+				# estimator__min_samples_leaf=[1, 100],
+				# estimator__learning_rate=[0.5, 1]
+				# )] * 2
+				# )]))},
+			# 'n_iter':32
+		# }),
+		# ('GBoostOVR', OneVsRestClassifier(GradientBoostingClassifier(random_state=0)), {
+			# 'param_space':dict(
+				# estimator__n_estimators=[20, 600],
+				# estimator__subsample=[0.5, 1],
+				# estimator__max_features=[0.5, 1],
+				# estimator__max_depth=[1, 100],
+				# estimator__min_samples_leaf=[1, 100],
+				# estimator__learning_rate=[0.5, 1]),
+			# 'n_iter':32
+		# }),
+		# ('Logistic Regression', LogisticRegression(dual=False), {
+			# 'param_space':dict(
+				# penalty=['l1', 'l2'],
+				# C=np.logspace(-5, 5, 11),
+				# tol=np.logspace(-6, 3, 10)),
+			# 'n_iter':32
+		# }),
+		# ('LinearSVC', LinearSVC(dual=False), {
+			# 'param_space':dict(
+				# penalty=['l1', 'l2'],
+				# C=np.logspace(-5, 5, 11),
+				# tol=np.logspace(-6, 3, 10)),
+			# 'n_iter':32
+		# }),
+		# ('Perceptron', Perceptron(), {
+			# 'param_space':dict(
+				# alpha=np.logspace(-6, 3, 10),
+				# n_iter=stats.randint(3, 20)),
+			# 'n_iter':32
+		# }),
+		# ('MultinomialNB', MultinomialNB(), {
+			# 'param_space':dict(
+				# alpha=np.logspace(-6, 3, 10),
+				# fit_prior=[True, False]),
+			# 'n_iter':32
+		# }),
+		# ('SVM', SVC(), {
+			# 'param_space':dict(
+				# kernel=['linear', 'rbf', 'poly'],
+				# C=np.logspace(-5, 5, 11),
+				# gamma=np.logspace(-6, 3, 10)),
+			# 'n_iter':32
+		# }),
+		# ('Extra Trees', ExtraTreesClassifier(random_state=0), {
+			# 'param_space':dict(
+				# n_estimators=[50, 100] + range(200, 1001, 200),
+				# max_features=np.linspace(0.5, 1, 6).tolist()+['sqrt', 'log2'],
+				# min_samples_leaf=[1]+range(10, 101, 10),
+				# class_weight=['balanced', None]),
+			# 'n_iter':32
+		# }),
+		# ('Bagging MNB', BaggingClassifier(base_estimator=MultinomialNB(), random_state=0), {
+			# 'param_space':dict(
+				# n_estimators=[20, 50, 100] + range(200, 601, 200),
+				# max_samples=np.linspace(0.5, 1, 6),
+				# max_features=np.linspace(0.5, 1, 6),
+				# bootstrap=[True, False],
+				# bootstrap_features=[True, False]),
+			# 'n_iter':32
+		# }),
+		# ('GBoost', GradientBoostingClassifier(random_state=0), {
+			# 'param_space':dict(
+				# n_estimators=[20, 50, 100] + range(200, 601, 200),
+				# subsample = np.linspace(0.5, 1, 6),
+				# max_features=np.linspace(0.5, 1, 6).tolist()+['sqrt', 'log2'],
+				# min_samples_leaf=[1]+range(10, 101, 10),
+				# learning_rate=np.linspace(0.5, 1, 6),
+				# loss=['deviance', 'exponential']),
+			# 'n_iter':32
+		# }),
+		# ('XGBoostOVR', OneVsRestClassifier(XGBClassifier(random_state=0)), {
+		# ('XGBoostOVR', OneVsRestClassifier(XGBClassifier(seed=0)), {
+			# 'param_space':dict(
+				# estimator__n_estimators=[20, 50, 100] + range(200, 601, 200),
+				# estimator__subsample = np.linspace(0.5, 1, 6),
+				# estimator__max_depth=[3, 5, 7] + range(10,101,10),
+				# estimator__learning_rate=np.linspace(0.5, 1, 6)),
+			# 'n_iter':32
+		# }),
+		# ('UGSS & RF', Pipeline([('featfilt', ftslct.MSelectKBest(ftslct.utopk, filtfunc=ftslct.gss_coef, fn=4000)), ('clf', RandomForestClassifier())]), {
+			# 'param_space':dict(
+				# featfilt__k=np.logspace(np.log2(250), np.log2(32000), 8, base=2).astype('int')),
+			# 'n_iter':32
+		# })
+	]:
+		yield mdl_name, mdl, params
 			
 			
 def all():
 	gse_clf()
 	gsm_clf()
-	gen_sgn()
 
 
 def gse_clf():
@@ -615,7 +605,7 @@ def gse_clf():
 		if (len(gse_Y.shape) == 1 or gse_Y.shape[1] == 1):
 			gse_Y = gse_Y.reshape((gse_Y.shape[0],))
 	else:
-		gse_Y = gse_Y.as_matrix().reshape((gse_Y.shape[0],))
+		gse_Y = gse_Y.as_matrix().reshape((gse_Y.shape[0],)) if (len(gse_Y.shape) == 2 and gse_Y.shape[1] == 1) else gse_Y.as_matrix()
 	
 	## Cross validation for GSE
 	print 'Cross validation for GSE'
@@ -633,22 +623,22 @@ def gse_clf():
 def gsm_clf():
 	global cfgr
 
-	if (opts.mltl):
-		pid = -1
-	else:
-		pid = opts.pid
+	pid = opts.pid
 	print 'Process ID: %s' % pid
 	
 	## Load data for GSM
 	gsm_Xs, gsm_Ys = load_data(type='gsm-clf', pid=pid, fmt=opts.fmt, spfmt=opts.spfmt)
-	if (opts.mltl):
-		gsm_Ys = [Y.as_matrix() if len(Y.shape) > 1 and Y.shape[1] > 1 else Y.as_matrix().reshape((Y.shape[0],)) for Y in gsm_Ys]
-	else:
-		gsm_Ys = [Y.as_matrix().reshape((Y.shape[0],)) for Y in gsm_Ys]
+	gsm_Ys = [Y.as_matrix() if len(Y.shape) > 1 and Y.shape[1] > 1 else Y.as_matrix().reshape((Y.shape[0],)) for Y in gsm_Ys]
 	
 	## Cross validation for GSM
 	print 'Cross validation for GSM'
-	for X, Y in zip(gsm_Xs, gsm_Ys):
+	orig_wd = os.getcwd()
+	for i, (X, Y) in enumerate(zip(gsm_Xs, gsm_Ys)):
+		# Switch to sub-working directory
+		new_wd = os.path.join(orig_wd, str(i) if pid == -1 else str(pid))
+		fs.mkdir(new_wd)
+		os.chdir(new_wd)
+		# Cross validation
 		gsm_filt_names, gsm_clf_names, gsm_pl_names = [[] for i in range(3)]
 		gsm_pl_set = set([])
 		gsm_model_iter = gen_cb_models if opts.comb else gen_bm_models
@@ -658,6 +648,8 @@ def gsm_clf():
 		model_param = dict(tuned=opts.best, glb_filtnames=gsm_filt_names, glb_clfnames=gsm_clf_names)
 		global_param = dict(comb=opts.comb, pl_names=gsm_pl_names, pl_set=gsm_pl_set)
 		txtclf.cross_validate(X, Y, gsm_model_iter, model_param, avg=opts.avg, kfold=opts.kfold, cfg_param=cfgr('bionlp.txtclf', 'cross_validate'), global_param=global_param, lbid=pid)
+		# Switch back to the main working directory
+		os.chdir(orig_wd)
 		
 		
 def gsm_clt():
@@ -675,12 +667,7 @@ def gsm_clt():
 	
 	## Clustering for GSM
 	print 'Clustering for GSM...'
-	# orig_wd = os.getcwd()
 	for i, (X, y, c) in enumerate(zip(Xs, labels, Ys)):
-		# Switch working directory
-		# new_wd = os.path.join(orig_wd, str(i) if pid == -1 else str(pid))
-		# fs.mkdir(new_wd)
-		# os.chdir(new_wd)
 		c = c.as_matrix()
 		# Transform the GEO IDs into constraints
 		# gse_ids = gsm2gse.loc[X.index]
@@ -697,7 +684,6 @@ def gsm_clt():
 		global_param = dict(comb=opts.comb, pl_names=pl_names, pl_set=pl_set)
 		# txtclt.cross_validate(X, y, model_iter, model_param, kfold=opts.kfold, cfg_param=cfgr('bionlp.txtclt', 'cross_validate'), global_param=global_param, lbid=pid)
 		txtclt.clustering(X, model_iter, model_param, cfg_param=cfgr('bionlp.txtclt', 'clustering'), global_param=global_param, lbid=pid)
-		# os.chdir(orig_wd)
 
 		
 def _filt_ent(entities, onto_lb):
@@ -1064,7 +1050,6 @@ def tuning_gse():
 	
 	## Load data for GSE
 	gse_X, gse_Y = load_data(type='gse', pid=pid, fmt=opts.fmt, spfmt=opts.spfmt)
-	# gse_X = gse_X.as_matrix().astype('float32')
 	gse_X = gse_X.as_matrix()
 	if (opts.mltl):
 		gse_Y = gse_Y.as_matrix()
@@ -1075,13 +1060,13 @@ def tuning_gse():
 	
 	## Parameter tuning for GSE
 	print 'Parameter tuning for GSE is starting...'
-	ext_params = dict(cv=KFold(n_splits=opts.kfold, shuffle=True, random_state=0))
-	params_generator = gen_mdl_params(opts.rdtune) if opts.dend is None else gen_nnmdl_params(gse_X.shape[1], gse_Y.shape[1] if len(gse_Y.shape) > 1 else 1, opts.rdtune)
+	ext_params = dict(folds=opts.kfold, n_iter=opts.maxt)
+	params_generator = gen_mdl_params() if opts.dend is None else gen_nnmdl_params(gse_X.shape[1], gse_Y.shape[1] if len(gse_Y.shape) > 1 else 1)
 	for mdl_name, mdl, params in params_generator:
 		params.update(ext_params)
 		print 'Tuning hyperparameters for %s' % mdl_name
-		pt_result = txtclf.tune_param(mdl_name, mdl, gse_X, gse_Y, opts.rdtune, params, mltl=opts.mltl, avg='micro' if opts.avg == 'all' else opts.avg, n_jobs=opts.np)
-		io.write_npz(dict(zip(['best_params', 'best_score', 'score_avg_cube', 'score_std_cube', 'dim_names', 'dim_vals'], pt_result)), 'gse_%sparam_tuning_for_%s_%s' % ('rd_' if opts.rdtune else '', mdl_name.replace(' ', '_').lower(), pid))
+		pt_result = txtclf.tune_param_optunity(mdl_name, mdl, gse_X, gse_Y, scoring='f1', optfunc='max', solver=opts.solver.replace('_', ' '), params=params, mltl=opts.mltl, avg='micro' if opts.avg == 'all' else opts.avg, n_jobs=opts.np)
+		io.write_npz(dict(zip(['best_params', 'best_score', 'score_avg_cube', 'score_std_cube', 'dim_names', 'dim_vals'], pt_result)), 'gse_%s_param_tuning_for_%s_%s' % (opts.solver.lower().replace(' ', '_'), mdl_name.replace(' ', '_').lower(), 'all' if (pid == -1) else pid))
 		
 		
 def tuning_gsm():
@@ -1093,22 +1078,82 @@ def tuning_gsm():
 	print 'Process ID: %s' % pid
 	
 	## Load data for GSM
-	gsm_Xs, gsm_Ys = load_data(type='gsm', pid=pid, fmt=opts.fmt, spfmt=opts.spfmt)
-	if (opts.mltl):
-		gsm_Ys = [Y.as_matrix() if len(Y.shape) > 1 and Y.shape[1] > 1 else Y.as_matrix().reshape((Y.shape[0],)) for Y in gsm_Ys]
-	else:
-		gsm_Ys = [Y.as_matrix().reshape((Y.shape[0],)) for Y in gsm_Ys]
+	gsm_Xs, gsm_Ys = load_data(type='gsm-clf', pid=pid, fmt=opts.fmt, spfmt=opts.spfmt)
+	gsm_Ys = [Y.as_matrix() if len(Y.shape) > 1 and Y.shape[1] > 1 else Y.as_matrix().reshape((Y.shape[0],)) for Y in gsm_Ys]
 	
 	## Parameter tuning for GSM
 	print 'Parameter tuning for GSM is starting...'
 	for i, (gsm_X, gsm_y) in enumerate(zip(gsm_Xs, gsm_Ys)):
-		ext_params = dict(cv=KFold(n_splits=opts.kfold, shuffle=True, random_state=0))
-		params_generator = gen_mdl_params(opts.rdtune) if opts.dend is None else gen_nnmdl_params(gsm_X.shape[1], gsm_y.shape[1] if len(gsm_y.shape) > 1 else 1, opts.rdtune)
+		gsm_X = gsm_X.as_matrix()
+		ext_params = dict(folds=opts.kfold, n_iter=opts.maxt)
+		params_generator = gen_mdl_params() if opts.dend is None else gen_nnmdl_params(gsm_X.shape[1], gsm_y.shape[1] if len(gsm_y.shape) > 1 else 1)
 		for mdl_name, mdl, params in params_generator:
 			params.update(ext_params)
 			print 'Tuning hyperparameters for %s in label %i' % (mdl_name, i)
-			pt_result = txtclf.tune_param(mdl_name, mdl, gsm_X, gsm_y, opts.rdtune, params, mltl=opts.mltl, avg='micro' if opts.avg == 'all' else opts.avg, n_jobs=opts.np)
-			io.write_npz(dict(zip(['best_params', 'best_score', 'score_avg_cube', 'score_std_cube', 'dim_names', 'dim_vals'], pt_result)), 'gsm_%sparam_tuning_for_%s_%s' % ('rd_' if opts.rdtune else '', mdl_name.replace(' ', '_').lower(), i if opts.mltl else '_'.join([int(pid / 2), int(pid % 2)])))
+			pt_result = txtclf.tune_param_optunity(mdl_name, mdl, gsm_X, gsm_y, scoring='f1', optfunc='max', solver=opts.solver.replace('_', ' '), params=params, mltl=opts.mltl, avg='micro' if opts.avg == 'all' else opts.avg, n_jobs=opts.np)
+			io.write_npz(dict(zip(['best_params', 'best_score', 'score_avg_cube', 'score_std_cube', 'dim_names', 'dim_vals'], pt_result)), 'gsm_%s_param_tuning_for_%s_%s' % (opts.solver.lower().replace(' ', '_'), mdl_name.replace(' ', '_').lower(), i if opts.mltl else '_'.join([int(pid / 2), int(pid % 2)])))
+			
+
+def autoclf(type='gse'):
+	if (type == 'gse'):
+		autoclf_gse()
+	elif (type == 'gsm'):
+		autoclf_gsm()
+	else:
+		autoclf_gse()
+		autoclf_gsm()
+
+	
+def autoclf_gse():
+	from autosklearn.classification import AutoSklearnClassifier
+	global cfgr
+
+	if (opts.mltl):
+		pid = -1
+	else:
+		pid = opts.pid
+	print 'Process ID: %s' % pid
+	
+	## Load data for GSE
+	gse_X, gse_Y = load_data(type='gse', pid=pid, fmt=opts.fmt, spfmt=opts.spfmt)
+	if (opts.mltl):
+		gse_Y = gse_Y.as_matrix()
+		if (len(gse_Y.shape) == 1 or gse_Y.shape[1] == 1):
+			gse_Y = gse_Y.reshape((gse_Y.shape[0],))
+	else:
+		gse_Y = gse_Y.as_matrix().reshape((gse_Y.shape[0],)) if (len(gse_Y.shape) == 2 and gse_Y.shape[1] == 1) else gse_Y.as_matrix()
+	
+	## Automatic model selection for GSE
+	print 'Automatic model selection for GSE'
+	autoclf = AutoSklearnClassifier()
+	autoclf.fit(gse_X, gse_Y)
+	io.write_obj(autoclf, 'autoclf_gse.mdl')
+	print 'Selected model:'
+	print show_models()
+	
+	
+def autoclf_gsm():
+	from autosklearn.classification import AutoSklearnClassifier
+	global cfgr
+
+	if (opts.mltl):
+		pid = -1
+	else:
+		pid = opts.pid
+	print 'Process ID: %s' % pid
+	
+	## Load data for GSM
+	gsm_Xs, gsm_Ys = load_data(type='gsm-clf', pid=pid, fmt=opts.fmt, spfmt=opts.spfmt)
+	gsm_Ys = [Y.as_matrix() if len(Y.shape) > 1 and Y.shape[1] > 1 else Y.as_matrix().reshape((Y.shape[0],)) for Y in gsm_Ys]
+	
+	## Automatic model selection for GSM
+	for i, (X, Y) in enumerate(zip(gsm_Xs, gsm_Ys)):
+		print 'Automatic model selection for GSM in label %i' % i
+		autoclf = AutoSklearnClassifier()
+		autoclf.fit(gse_X, gse_Y)
+		io.write_obj(autoclf, 'autoclf_gsm_%i.mdl' % i)
+		print 'Selected model for label %i:' % i
+		print show_models()
 
 
 # def demo():
@@ -1144,6 +1189,9 @@ def main():
 	elif (opts.method == 'gen_sgn'):
 		gen_sgn()
 		return
+	elif (opts.method == 'autoclf'):
+		autoclf(opts.ftype)
+		return
 	all()
 
 
@@ -1157,7 +1205,7 @@ if __name__ == '__main__':
 	op.add_option('-f', '--fmt', default='npz', help='data stored format: csv or npz [default: %default]')
 	op.add_option('-s', '--spfmt', default='csr', help='sparse data stored format: csr or csc [default: %default]')
 	op.add_option('-t', '--tune', action='store_true', dest='tune', default=False, help='firstly tune the hyperparameters')
-	op.add_option('-r', '--rdtune', action='store_true', dest='rdtune', default=False, help='randomly tune the hyperparameters')
+	op.add_option('-r', '--solver', default='particle_swarm', action='store', type='str', dest='solver', help='solver used to tune the hyperparameters')
 	op.add_option('-b', '--best', action='store_true', dest='best', default=False, help='use the tuned hyperparameters')
 	op.add_option('-c', '--comb', action='store_true', dest='comb', default=False, help='run the combined methods')
 	op.add_option('-l', '--mltl', action='store_true', dest='mltl', default=False, help='use multilabel strategy')
@@ -1166,10 +1214,11 @@ if __name__ == '__main__':
 	op.add_option('-g', '--gpunum', default=1, action='store', type='int', dest='gpunum', help='indicate the gpu device number')
 	op.add_option('-q', '--gpuq', dest='gpuq', help='prefered gpu device queue')
 	op.add_option('-z', '--bsize', default=32, action='store', type='int', dest='bsize', help='indicate the batch size used in deep learning')
-	op.add_option('-e', '--ftype', default='', type='str', dest='ftype', help='the document type used to generate data')
+	op.add_option('-e', '--ftype', default='gse', type='str', dest='ftype', help='the document type used to generate data')
 	op.add_option('-u', '--fuzzy', action='store_true', dest='fuzzy', default=False, help='use fuzzy clustering')
 	op.add_option('-j', '--thrshd', default='mean', type='str', dest='thrshd', help='threshold value')
 	op.add_option('-w', '--cache', default='.cache', help='the location of cache files')
+	op.add_option('-x', '--maxt', default=32, action='store', type='int', dest='maxt', help='indicate the maximum number of trials')
 	op.add_option('-i', '--input', default='gsc', help='input source: gsc or geo [default: %default]')
 	op.add_option('-m', '--method', help='main method to run')
 	op.add_option('-v', '--verbose', action='store_true', dest='verbose', default=False, help='display detailed information')

@@ -20,7 +20,7 @@ import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.preprocessing import MultiLabelBinarizer, MinMaxScaler, Normalizer
 
-from bionlp.spider import geo
+from bionlp.spider import geoxml as geo
 from bionlp.util import fs, io, func, ontology
 from bionlp import nlp
 
@@ -44,11 +44,13 @@ LABEL2ONTO = {'gene perturbation':'PRGE', 'drug perturbation':'CHED', 'disease s
 LABEL2DB = {'gene perturbation':'go', 'drug perturbation':'dbvocab', 'disease signature':'do'}
 LABEL2ID = {'gene perturbation':'gene', 'drug perturbation':'drug', 'disease signature':'dz'}
 
-DB2LANG = {'go':'', 'dron':'', 'do':'', 'dbvocab':'en'}
-DB2IDNS = {'go':'OBO', 'dron':'OBO', 'do':'OBO', 'dbvocab':'DBID'}
+DB2LANG = {'go':'', 'dron':'', 'do':'', 'dbvocab':'en', 'dgidb':'', 'dgnet':'en'}
+DB2IDNS = {'go':'OBO', 'dron':'OBO', 'do':'OBO', 'dbvocab':'DBID', 'dgidb':{'gene':[('dgigene', 'DGIDB_GENE')], 'drug':[('dgidrug', 'DGIDB_DRUG')]}, 'dgnet':{'gene':[('obo', 'OBO')], 'disease':[('omim', 'OMIM')]}}
 DB2IDN = {'go':'go_id', 'dron':'dron_id', 'do':'do_id', 'dbvocab':'drugbank_id'}
 DB2ONTON = {'go':'gene_symbol', 'dron':'drug_name', 'do':'disease_name', 'dbvocab':'drug_name'}
 DB2PRDS = {'go':{'idprd':[('RDFS', 'label'), ('OBOWL', 'hasExactSynonym'), ('OBOWL', 'hasRelatedSynonym')], 'lbprds':[('RDFS', 'label')]}, 'dron':{'idprd':[('RDFS', 'label'), ('OBOWL', 'hasExactSynonym'), ('OBOWL', 'hasRelatedSynonym')], 'lbprds':[('RDFS', 'label')]}, 'do':{'idprd':[('RDFS', 'label'), ('OBOWL', 'hasExactSynonym'), ('OBOWL', 'hasRelatedSynonym')], 'lbprds':[('RDFS', 'label')]}, 'dbvocab':{'idprd':[('DBV', 'common-name'), ('DBV', 'term')], 'lbprds':[('DBV', 'common-name')]}}
+DB2INTPRDS = {'go':[('obowl', 'OBOWL')], 'dron':[('obowl', 'OBOWL')], 'do':[('obowl', 'OBOWL')], 'dbvocab':[], 'dgidb':[('dgidbv', 'DGIDBV')], 'dgnet':[]}
+DB2ATTR = {'go':{'noid':False}, 'dron':{'noid':False}, 'do':{'noid':False}, 'dbvocab':{'noid':True}, 'dgidb':{'noid':True}, 'dgnet':{'noid':False}}
 
 
 def get_geos(type='gse', fmt='xml'):
@@ -59,6 +61,7 @@ def get_geos(type='gse', fmt='xml'):
 	for lb, fname in LABEL2FILE.iteritems():
 		excel_df = pd.read_csv(os.path.join(GEO_PATH, fname))
 		if (fmt == 'soft'):
+			from bionlp.spider import geo as geo
 			for gse in geo.fetch_geo(excel_df['geo_id'], saved_path=os.path.join(GEO_PATH, fmt)):
 				if (type == 'gse'):
 					geo_id, geo_data, _ = geo.parse_geo(gse, with_samp=False)
@@ -72,7 +75,6 @@ def get_geos(type='gse', fmt='xml'):
 					else:
 						geo_docs[geo_id] = (geo_data, [lb])
 		else:
-			from bionlp.spider import geoxml as geo
 			if (type == 'gse'):
 				lb_folder = os.path.join(GEO_PATH, fmt, os.path.splitext(fname)[0])
 			elif (type == 'gsm'):

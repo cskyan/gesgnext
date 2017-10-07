@@ -53,6 +53,17 @@ def gen_data_gse():
 		geo_docs = spdr.get_geos(type='gse', fmt='xml')
 		X, Y = spdr.get_data(geo_docs, type='gse', ft_type=opts.type, max_df=ast.literal_eval(opts.maxdf), min_df=ast.literal_eval(opts.mindf), fmt=opts.fmt, spfmt=opts.spfmt)
 
+	# Feature Selection
+	stat, _ = ftslct.utopk(X.values, Y.values, ftslct.decision_tree, fn=200)
+	io.write_npz(stat, os.path.join(spdr.DATA_PATH, 'gse_ftw.npz'))
+	cln_X = X.iloc[:,stat.argsort()[-200:][::-1]]
+	print 'The size of data has been changed from %s to %s.' % (X.shape, cln_X.shape)
+	if (opts.fmt == 'npz'):
+		io.write_df(cln_X, os.path.join(spdr.DATA_PATH, 'cln_gse_X.npz'), with_idx=True, sparse_fmt=opts.spfmt, compress=True)
+	else:
+		cln_X.to_csv(os.path.join(spdr.DATA_PATH, 'cln_gse_X.csv'), encoding='utf8')
+
+	# Label splitting
 	for i in range(Y.shape[1]):
 		y = Y.iloc[:,i]
 		if (opts.fmt == 'npz'):
@@ -70,9 +81,9 @@ def gen_data_gsm():
 		
 	# Feature Selection
 	for i, (X, Y, Z) in enumerate(zip(Xs, Ys, labels)):
-		stat, _ = ftslct.utopk(X.values, Y.values, ftslct.decision_tree, fn=500)
-		io.write_npz(stat, os.path.join(spdr.DATA_PATH, 'ftw.npz'))
-		cln_X = X.iloc[:,stat.argsort()[-500:][::-1]]
+		stat, _ = ftslct.utopk(X.values, Y.values, ftslct.decision_tree, fn=200)
+		io.write_npz(stat, os.path.join(spdr.DATA_PATH, 'gsm_ftw_%i.npz' % i))
+		cln_X = X.iloc[:,stat.argsort()[-200:][::-1]]
 		print 'The size of data has been changed from %s to %s.' % (X.shape, cln_X.shape)
 		
 		if (opts.fmt == 'npz'):
@@ -81,6 +92,7 @@ def gen_data_gsm():
 			cln_X.to_csv(os.path.join(spdr.DATA_PATH, 'cln_gsm_X_%i.csv' % i), encoding='utf8')
 		del X, cln_X
 
+	# Label splitting
 	for i in xrange(len(Ys)):
 		for j in xrange(Ys[i].shape[1]):
 			y = Ys[i].iloc[:,j]

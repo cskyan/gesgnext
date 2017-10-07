@@ -23,12 +23,13 @@ from optparse import OptionParser
 
 import numpy as np
 import scipy as sp
+from scipy import misc
 import pandas as pd
+import networkx as nx
 
 from bionlp.spider import annot, sparql
-from bionlp.util import fs, io, func, plot, ontology, shell, njobs
+from bionlp.util import fs, io, func, plot, ontology, shell, njobs, sampling
 from bionlp import dstclc, nlp, metric
-from bioinfo.ext import chdir, limma
 # from bionlp import txtclt
 
 import gsc
@@ -94,7 +95,7 @@ def dgcsv2nt():
 	excel_df = pd.read_csv(opts.loc, encoding='utf-8').fillna('')
 	gene_tmplt, intype_tmplt, drug_tmplt = u'<http://dgidb.genome.wustl.edu/gene/%s>', u'<http://dgidb.genome.wustl.edu/vocab#%s>', u'<http://dgidb.genome.wustl.edu/drug/%s>'
 	# vcb_interact = u'<http://dgidb.genome.wustl.edu/vocab#interact>'
-	gene_name, intype, drug_name = excel_df['gene_long_name'].tolist(), excel_df['interaction_types'].tolist(), excel_df['drug_primary_name'].tolist()
+	gene_name, intype, drug_name = excel_df['entrez_gene_symbol'].tolist(), excel_df['interaction_types'].tolist(), excel_df['drug_primary_name'].tolist()
 	triples = [(gene_tmplt % gn.replace(' ', '_'), intype_tmplt % it.replace('n/a', 'unknown').replace(' ', '_'), drug_tmplt % dn.replace(' ', '_')) for gn, it, dn in zip(gene_name, intype, drug_name)]
 	triples = dict.fromkeys(triples).keys()
 	fpath = opts.output if opts.output is not None else os.path.splitext(opts.loc)[0] + '.nt'
@@ -368,6 +369,7 @@ def sgn2ge():
 
 
 def _sgn2dge(excel_df, method, ge_path, saved_path, cache_path):
+	from bioinfo.ext import chdir, limma
 	_method = method.lower()
 	ids = excel_df['id'] if hasattr(excel_df, 'id') else excel_df.index
 	dge_dfs = []
@@ -443,26 +445,87 @@ def sgn2dge():
 		exit(-1)
 	# Extract the control group and perturbation group of each gene expression signature
 	_sgn2dge(excel_df, method, ge_path, saved_path, cache_path)
-		
+	
+	
+def plot_dgepval():
+	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	dge_dirs, labels, numsamp = kwargs['dges'].split(SC), kwargs['labels'].split(SC), kwargs.setdefault('numsamp', 10)
+	groups = [[int(x) for x in grp.split(',')] for grp in kwargs['groups'].split(SC)] if kwargs.has_key('groups') else None
+	group_labels = [x for grp in kwargs['group_labels'].split(SC) for x in grp.split(',')]
+	data = []
+	for dge_dir, label in zip(dge_dirs, labels):
+		pvalues = []
+		for fpath in fs.listf(dge_dir, pattern='dge_.*.npz', full_path=True):
+			selected_pvalue = np.random.choice(io.read_df(fpath, with_idx=True)['pvalue'].tolist(), numsamp, replace=False)
+			selected_pvalue[selected_pvalue <= 0] = 2
+			selected_pvalue[selected_pvalue == 2] = selected_pvalue.min()
+			selected_pvalue[selected_pvalue >= 1] = -2
+			selected_pvalue[selected_pvalue == -2] = selected_pvalue.max()
+			pvalues.append(selected_pvalue)
+		data_col = np.concatenate(pvalues)
+		label_col = np.repeat([label], data_col.shape[0])
+		data.append(np.stack([label_col, data_col]))
+	plot.plot_violin(data, xlabel='GEO Collection', ylabel='-log10(P-Value)', labels=group_labels, groups=groups, ref_lines={'y':[-np.log10(0.05)]}, plot_cfg=plot_common_cfg, log=-1, sns_inner='box', sns_bw=.3)
+	
 
+# Binary Jaccard index
 def _ji(a, b):
 	a_sum, b_sum = a.sum(), b.sum()
 	if (a_sum == 0 and b_sum == 0): return 1
 	ab_sum = (a & b).sum()
 	return 1.0 * ab_sum / (a_sum + b_sum - ab_sum)
 	
+# Weighted Jaccard index
 def _wji(a, b):
 	max_sum = np.max((a,b), axis=0).sum()
 	if (max_sum == 0): return 1
 	min_sum = np.min((a,b), axis=0).sum()
 	return 1.0 * min_sum / max_sum
+
+# Binary Spearman's Footrule
+def _sf(a, b):
+	return 1 - np.abs(a - b).sum() / np.abs(2 * a - len(a) - 1).sum()
 	
+# Binary Kendall's Tau
+def _kt(a, b):
+	return 1 - np.logical_xor([m < n for m, n in itertools.combinations(a, 2)], [m < n for m, n in itertools.combinations(b, 2)]).astype('int8').sum() / sp.misc.comb(len(a), 2)
+
+_wfunc = {'iota': np.frompyfunc(lambda x: 1, 1, 1), 'dcgw': np.frompyfunc(lambda x: np.log10(1+x)/np.power(2,x), 1, 1)}
+# Weighted Spearman's Footrule
+def _wsf(a, b, wfunc='iota'):
+	mask = np.logical_or(a != 0, b != 0).astype('int8')
+	a = len(a) - np.argsort(a).argsort()
+	b = len(b) - np.argsort(b).argsort()
+	return 1 - 2.0 * np.abs(a - b).sum() / (mask * _wfunc[wfunc](range(1, len(a) + 1)) * np.abs(2 * a - len(a) - 1)).sum()
+
+# Weighted Kendall's Tau
+def _wkt(a, b, wfunc='iota'):
+	mask = np.logical_xor([m < n for m, n in itertools.combinations(a, 2)], [m < n for m, n in itertools.combinations(b, 2)])
+	union_mask = np.array([np.logical_and((a[m] != 0 or b[m] != 0), a[n] != 0 or b[n] != 0) for m, n in itertools.combinations(range(len(a)), 2)])
+	pair_idx = np.array([(m, n) for m, n in itertools.combinations(range(1, len(a) + 1), 2)])
+	return 1 - 1.0 * _wfunc[wfunc](pair_idx[mask]).sum() / _wfunc[wfunc](pair_idx[union_mask]).sum()
+
+# Signed Binary Jaccard index
 def _sji(a, b):
 	return (_ji(a[0], b[0]) + _ji(a[1], b[1]) - _ji(a[0], b[1]) - _ji(a[1], b[0])) / 2
-	
+
+# Signed Binary Spearman's Footrule
+def _ssf(a, b):
+	return (_sf(a[0], b[0]) + _sf(a[1], b[1]) - _sf(a[0], b[1]) - _sf(a[1], b[0])) / 2
+
+# Signed weighted Jaccard index
 def _swji(a, b):
 	return (_wji(a[0], b[0]) + _wji(a[1], b[1]) - _wji(a[0], b[1]) - _wji(a[1], b[0])) / 2
+	
+# Signed Weighted Spearman's Footrule
+def _swsf(a, b, wfunc='iota'):
+	return (_wsf(a[0], b[0], wfunc=wfunc) + _wsf(a[1], b[1], wfunc=wfunc) - _wsf(a[0], b[1], wfunc=wfunc) - _wsf(a[1], b[0], wfunc=wfunc)) / 2
+	
+# Signed Weighted Kendall's Tau
+def _swkt(a, b, wfunc='iota'):
+	return (_wkt(a[0], b[0], wfunc=wfunc) + _wkt(a[1], b[1], wfunc=wfunc) - _wkt(a[0], b[1], wfunc=wfunc) - _wkt(a[1], b[0], wfunc=wfunc)) / 2
 
+# Signed Binary Jaccard index vector-mode
 def _sjiv(X, Y):
 	def _ji(a, b):
 		a_sum, b_sum = a.sum(), b.sum()
@@ -479,24 +542,19 @@ def _sjiv(X, Y):
 		simmt[i, j] = _sji(X[i], Y[j])
 	return simmt
 
+# Signed Binary Jaccard index cube-mode
 def _sjic(X, Y):
+	import numpy as np
 	Y_T = Y.T
 	interaction = np.tensordot(X, Y, axes=[[-1],[-1]]).transpose(range(len(X.shape)-1)+range(len(X.shape)-1, len(X.shape)+len(Y.shape)-2)[::-1]) # XY' shape of (m, 2, 2, n)
 	union = np.tensordot(X, np.ones((X.shape[-1], X.shape[-2])), axes=1).reshape(X.shape[:-1] + (X.shape[-2], 1)).repeat(Y.shape[0], axis=-1) + np.tensordot(Y, np.ones((Y.shape[-1], Y.shape[-2])), axes=1).reshape(Y.shape[:-1] + (Y.shape[-2], 1)).repeat(X.shape[0], axis=-1).T - interaction # XI+IY'-XY'
 	r = 1.0 * interaction / union
 	s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[1],[0]]).reshape((X.shape[0], Y.shape[0])) # sum reduction
 	return s / 2.0
-	
-	
-def _jim_t(X, Y, signed=True):
-	shape = X.shape[0] / 2, Y.shape[0] / 2
-	simmt = np.ones(shape)
-	for i, j in itertools.product(range(shape[0]), range(shape[1])):
-		simmt[i, j] = _sji([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]])
-	return simmt
-	
-	
+
+# Binary Jaccard index matrix-mode
 def _jim(X, Y, signed=True):
+	import numpy as np
 	Y_T = Y.T
 	interaction = X.dot(Y_T) # XY' shape of (2m, 2n)
 	# union = X.sum(axis=1).reshape((-1, 1)).repeat(Y.shape[0], axis=1) + Y_T.sum(axis=0).reshape((1, -1)).repeat(X.shape[0], axis=0) - interaction
@@ -510,52 +568,149 @@ def _jim(X, Y, signed=True):
 		s = np.tensordot(np.tensordot(np.array([[1,0]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[0]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
 	return s / 2.0
 
-
-def _wjim_t(X, Y, signed=True):
+# Binary Jaccard index matrix-mode true reference
+def _jim_t(X, Y, signed=True):
 	shape = X.shape[0] / 2, Y.shape[0] / 2
 	simmt = np.ones(shape)
 	for i, j in itertools.product(range(shape[0]), range(shape[1])):
-		simmt[i, j] = _swji([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]])
+		simmt[i, j] = _sji([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]])
 	return simmt
 
-	
+# Weighted Jaccard index matrix-mode
 def _wjim(X, Y, signed=True):
+	import numpy as np
 	_X = X.reshape((X.shape[0], 1, X.shape[1])).repeat(Y.shape[0], axis=1)
 	_Y = Y.reshape((1, Y.shape[0], Y.shape[1])).repeat(X.shape[0], axis=0)
 	min_tensor = _X * (_X <= _Y).astype('int8') + _Y * (_Y < _X).astype('int8')
 	interaction = np.tensordot(min_tensor, np.ones(X.shape[1]), axes=[[2],[0]]).reshape((X.shape[0], Y.shape[0])) # SUM<0:k>[min(X_i,Y_i)]
 	del min_tensor
 	max_tensor = _X * (_X >= _Y).astype('int8') + _Y * (_Y > _X).astype('int8')
+	del _X, _Y
 	union = np.tensordot(max_tensor, np.ones(X.shape[1]), axes=[[2],[0]]).reshape((X.shape[0], Y.shape[0])) # SUM<0:k>[max(X_i,Y_i)]
 	del max_tensor
 	r = 1.0 * interaction / union
 	r = r.reshape((r.shape[0]/2, 2, r.shape[1]/2, 2))
+	del interaction, union
 	# Sum reduction
 	if (signed):
 		s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
 	else:
 		s = np.tensordot(np.tensordot(np.array([[1,0]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[0]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
 	return s / 2.0
+
+# Weighted Jaccard index matrix-mode true reference
+def _wjim_t(X, Y, signed=True):
+	shape = X.shape[0] / 2, Y.shape[0] / 2
+	simmt = np.ones(shape)
+	for i, j in itertools.product(range(shape[0]), range(shape[1])):
+		simmt[i, j] = _swji([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]])
+	return simmt
 	
+# Weighted Spearman's Footrule matrix-mode
+def _wsfm(X, Y, signed=True, wfunc='iota'):
+	import numpy as np
+	_wfunc = {'iota': np.frompyfunc(lambda x: 1, 1, 1), 'dcgw': np.frompyfunc(lambda x: np.log10(1+x)/np.power(2,x), 1, 1)}
+	X_mask = (X != 0)
+	Y_mask = (Y != 0)
+	X = X.shape[1] - X.argsort(axis=1).argsort(axis=1)
+	Y = Y.shape[1] - Y.argsort(axis=1).argsort(axis=1)
+	_X = X.reshape((X.shape[0], 1, X.shape[1])).repeat(Y.shape[0], axis=1)
+	_Y = Y.reshape((1, Y.shape[0], Y.shape[1])).repeat(X.shape[0], axis=0)
+	_X_mask = X_mask.reshape((X_mask.shape[0], 1, X_mask.shape[1])).repeat(Y_mask.shape[0], axis=1)
+	_Y_mask = Y_mask.reshape((1, Y_mask.shape[0], Y_mask.shape[1])).repeat(X_mask.shape[0], axis=0)
+	union_mask = np.logical_or(_X_mask != 0, _Y_mask != 0).astype('int8')
+	del X_mask, Y_mask, _X_mask, _Y_mask
+	_order_idx = np.arange(1, X.shape[1] + 1).reshape((1, 1, -1)).repeat(X.shape[0], axis=0).repeat(Y.shape[0], axis=1)
+	weights = _wfunc[wfunc](_order_idx)
+	sf = np.tensordot(union_mask * weights * np.abs(_X - _Y), np.ones(X.shape[1]), axes=[[2],[0]]).reshape((X.shape[0], Y.shape[0]))
+	del _X, _Y
+	norm = np.tensordot(union_mask * weights * np.abs(2 * _order_idx - X.shape[1] - 1), np.ones(X.shape[1]), axes=[[2],[0]]).reshape((X.shape[0], Y.shape[0]))
+	del union_mask, _order_idx, weights
+	no_overlap = (norm == 0)
+	sf[no_overlap] = 1.0
+	norm[no_overlap] = 2.0
+	r = (1.0 - sf / norm).astype('float32')
+	r = r.reshape((r.shape[0]/2, 2, r.shape[1]/2, 2))
+	del sf, norm, no_overlap
+	# Sum reduction
+	if (signed):
+		s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
+	else:
+		s = np.tensordot(np.tensordot(np.array([[1,0]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[0]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
+	return s / 2.0
+
+# Weighted Spearman's Footrule matrix-mode true reference
+def _wsfm_t(X, Y, signed=True, wfunc='iota'):
+	shape = X.shape[0] / 2, Y.shape[0] / 2
+	simmt = np.ones(shape)
+	for i, j in itertools.product(range(shape[0]), range(shape[1])):
+		simmt[i, j] = _swsf([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]], wfunc=wfunc)
+	return simmt
 	
-def _wjim_iter_1d(X, Y, signed=True, ramsize=1):
+# Weighted Kendall's Tau matrix-mode
+def _wktm(X, Y, signed=True, wfunc='iota'):
+	import numpy as np
+	_wfunc = {'iota': np.frompyfunc(lambda x: 1, 1, 1), 'dcgw': np.frompyfunc(lambda x: np.log10(1+x)/np.power(2,x), 1, 1)}
+	def cmp_comb(x):
+		return [m < n for m, n in itertools.combinations(x, 2)]
+	X_cmpcomb = np.apply_along_axis(cmp_comb, 1, X)
+	Y_cmpcomb = np.apply_along_axis(cmp_comb, 1, Y)
+	_X_cmpcomb = X_cmpcomb.reshape((X_cmpcomb.shape[0], 1, X_cmpcomb.shape[1])).repeat(Y_cmpcomb.shape[0], axis=1)
+	_Y_cmpcomb = Y_cmpcomb.reshape((1, Y_cmpcomb.shape[0], Y_cmpcomb.shape[1])).repeat(X_cmpcomb.shape[0], axis=0)
+	_mask = np.logical_xor(_X_cmpcomb, _Y_cmpcomb)
+	mask = _mask.reshape(_mask.shape+(1,)).repeat(2, axis=-1).astype('int8')
+	del X_cmpcomb, Y_cmpcomb, _X_cmpcomb, _Y_cmpcomb, _mask
+	X_mask = (X != 0)
+	Y_mask = (Y != 0)
+	_X_mask = X_mask.reshape((X_mask.shape[0], 1, X_mask.shape[1])).repeat(Y_mask.shape[0], axis=1)
+	_Y_mask = Y_mask.reshape((1, Y_mask.shape[0], Y_mask.shape[1])).repeat(X_mask.shape[0], axis=0)
+	__union_mask = np.logical_or(_X_mask != 0, _Y_mask != 0)
+	del X_mask, Y_mask, _X_mask, _Y_mask
+	def union_comb(x):
+		return [m and n for m, n in itertools.combinations(x, 2)]
+	_union_mask = np.apply_along_axis(union_comb, 2, __union_mask)
+	union_mask = _union_mask.reshape(_union_mask.shape+(1,)).repeat(2, axis=-1).astype('int8')
+	del __union_mask, _union_mask
+	pair_idx = np.array([(m, n) for m, n in itertools.combinations(range(1, X.shape[1] + 1), 2)]).reshape((1, 1, -1, 2)).repeat(X.shape[0], axis=0).repeat(Y.shape[0], axis=1)
+	weights = _wfunc[wfunc](pair_idx)
+	del pair_idx
+	r = (1 - 1.0 * np.tensordot(mask * weights, np.ones((union_mask.shape[2],2)), axes=[[2,3],[0,1]]) / np.tensordot(union_mask * weights, np.ones((union_mask.shape[2],2)), axes=[[2,3],[0,1]])).astype('float32')
+	r = r.reshape((r.shape[0]/2, 2, r.shape[1]/2, 2))
+	del mask, weights, union_mask
+	# Sum reduction
+	if (signed):
+		s = np.tensordot(np.tensordot(np.array([[1,-1]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[-1]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
+	else:
+		s = np.tensordot(np.tensordot(np.array([[1,0]]), r, axes=[[1],[1]]).reshape((r.shape[0],)+r.shape[2:]), np.array([[1],[0]]), axes=[[2],[0]]).reshape((X.shape[0]/2, Y.shape[0]/2))
+	return s / 2.0
+
+# Weighted Kendall's Tau matrix-mode true reference
+def _wktm_t(X, Y, signed=True, wfunc='iota'):
+	shape = X.shape[0] / 2, Y.shape[0] / 2
+	simmt = np.ones(shape)
+	for i, j in itertools.product(range(shape[0]), range(shape[1])):
+		simmt[i, j] = _swkt([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]], wfunc=wfunc)
+	return simmt
+
+# 1D parallelism
+def _iter_1d(X, Y, method, signed=True, ramsize=1, task_size_f=lambda X: 1024**2, **kwargs):
 	transposed = X.shape[0] < Y.shape[0]
 	X, Y = (Y, X) if transposed else (X, Y)
-	splitted_tasks = njobs.split_1d(Y.shape[0]/2, task_size=4*(6*X.shape[0]*X.shape[1]*2), split_size=ramsize*1024**3)
+	splitted_tasks = njobs.split_1d(Y.shape[0]/2, task_size=task_size, split_size=ramsize*1024**3)
 	st_str = '[%s]' % ', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks, return_counts=True))))[::-1]])
 	io.inst_print('The tasks are divided into the grid of size: %s' % st_str)
 	task_results, task_idx = [], np.cumsum([0]+splitted_tasks)
 	for i in range(len(splitted_tasks)):
 		sub_Y = Y[2*task_idx[i]:2*task_idx[i+1]]
-		task_results.append(_wjim(X, sub_Y, signed=signed))
+		task_results.append(method(X, sub_Y, signed=signed, **kwargs))
 	s = np.concatenate(task_results, axis=-1)
 	s = s.T if transposed else s
 	return s
-	
-	
-def _wjim_iter_2d(X, Y, signed=True, ramsize=1):
+
+# 2D parallelism
+def _iter_2d(X, Y, method, signed=True, ramsize=1, task_size_f=lambda X: 1024**2, cache_path=None, **kwargs):
 	shape = (X.shape[0]/2, Y.shape[0]/2)
-	splitted_tasks = njobs.split_2d(shape, task_size=4*(6*X.shape[1]*4), split_size=ramsize*1024**3)
+	splitted_tasks = njobs.split_2d(shape, task_size=task_size, split_size=ramsize*1024**3)
 	st_str = '[[%s], [%s]]' % (', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]), ', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]))
 	io.inst_print('The tasks are divided into the grid of size: %s' % st_str)
 	task_results, task_idx = [], [np.cumsum([0]+splitted_tasks[0]), np.cumsum([0]+splitted_tasks[1])]
@@ -564,23 +719,42 @@ def _wjim_iter_2d(X, Y, signed=True, ramsize=1):
 		subtask_results = []
 		for j in range(len(splitted_tasks[1])):
 			sub_Y = Y[2*task_idx[1][j]:2*task_idx[1][j+1]]
-			subtask_results.append(_wjim(sub_X, sub_Y, signed=signed))
-		task_results.append(np.concatenate(subtask_results, axis=-1))
-	return np.concatenate(task_results, axis=0).reshape(shape)
-	
-	
-def _wjim_iter_2d_mltp(X, Y, signed=True, ramsize=1, n_jobs=1):
-	shape = (X.shape[0]/2, Y.shape[0]/2)
-	splitted_tasks = njobs.split_2d(shape, task_size=4*(6*X.shape[1]*4), split_size=ramsize/n_jobs*1024**3)
-	st_str = '[[%s], [%s]]' % (', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]), ', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]))
-	io.inst_print('The tasks are divided into the grid of size: %s' % st_str)
-	task_results, task_idx = [], [np.cumsum([0]+splitted_tasks[0]), np.cumsum([0]+splitted_tasks[1])]
-	for i in range(len(splitted_tasks[0])):
-		sub_X = X[2*task_idx[0][i]:2*task_idx[0][i+1]]
-		subtask_results = njobs.run_pool(_wjim, n_jobs=n_jobs, dist_param=['Y'], X=sub_X, Y=[Y[2*task_idx[1][j]:2*task_idx[1][j+1]] for j in range(len(splitted_tasks[1]))], signed=signed)
+			subtask_results.append(method(sub_X, sub_Y, signed=signed, **kwargs))
 		task_results.append(np.concatenate(subtask_results, axis=-1))
 	return np.concatenate(task_results, axis=0).reshape(shape)
 
+# 2D parallelism with multi-processing
+def _iter_2d_mltp(X, Y, method, signed=True, ramsize=1, task_size_f=lambda X: 1024**2, n_jobs=1, ipp_profile='', cache_path='', **kwargs):
+	shape = (X.shape[0]/2, Y.shape[0]/2)
+	splitted_tasks = njobs.split_2d(shape, task_size=task_size_f(X), split_size=ramsize/n_jobs*1024**3)
+	st_str = '[[%s], [%s]]' % (', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]), ', '.join(['*'.join(map(str, tpl)) for tpl in func.sorted_dict(dict(zip(*np.unique(splitted_tasks[0], return_counts=True))))[::-1]]))
+	io.inst_print('The tasks are divided into the grid of size: %s' % st_str)
+	pool, ipp_client, use_cache, use_ipp, task_results, task_idx = None, ipp_profile, not cache_path.isspace() and os.path.isdir(cache_path), ipp_profile and not ipp_profile.isspace(), [], [np.cumsum([0]+splitted_tasks[0]), np.cumsum([0]+splitted_tasks[1])]
+	for i in range(len(splitted_tasks[0])):
+		cache_f = os.path.join(cache_path, 'task_%i.npz' % i)
+		if (use_cache and os.path.exists(cache_f)):
+			task_results.append(io.read_spmt(cache_f, sparse_fmt='csr'))
+		else:
+			sub_X = X[2*task_idx[0][i]:2*task_idx[0][i+1]]
+			if (use_ipp):
+				subtask_results, ipp_client = njobs.run_ipp(method, n_jobs=n_jobs, client=ipp_client, ret_client=True, dist_param=['Y'], X=sub_X, Y=[Y[2*task_idx[1][j]:2*task_idx[1][j+1]] for j in range(len(splitted_tasks[1]))], signed=signed, **kwargs)
+			else:
+				subtask_results, pool = njobs.run_pool(method, n_jobs=n_jobs, pool=pool, ret_pool=True, dist_param=['Y'], X=sub_X, Y=[Y[2*task_idx[1][j]:2*task_idx[1][j+1]] for j in range(len(splitted_tasks[1]))], signed=signed, **kwargs)
+			res_spmt = sp.sparse.csr_matrix(np.concatenate(subtask_results, axis=-1))
+			if (use_cache): io.write_spmt(res_spmt, cache_f, sparse_fmt='csr', compress=True)
+			task_results.append(res_spmt)
+			del sub_X, subtask_results, res_spmt
+		io.inst_print('Completed %.1f%% of the tasks' % (100.0*(i+1)/len(splitted_tasks[0])))
+	if (use_ipp):
+		njobs.run_ipp(None, client=ipp_client, ret_client=False)
+	else:
+		njobs.run_pool(None, pool=pool, ret_pool=False)
+	return sp.sparse.vstack(task_results).toarray().reshape(shape)
+	
+_sim_method = {'ji':_jim, 'wji':_wjim, 'wsf':_wsfm, 'wkt':_wktm}
+BYTE_OF_FLOAT32, DIM_OF_SGN = 4, 2
+_task_size_1d = {'ji':lambda X: BYTE_OF_FLOAT32*(3*DIM_OF_SGN*X.shape[0]*X.shape[1]), 'wji':lambda X: BYTE_OF_FLOAT32*(6*DIM_OF_SGN*X.shape[0]*X.shape[1]), 'wsf':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*X.shape[0]*X.shape[1]), 'wkt':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*X.shape[0]*X.shape[1]+12*DIM_OF_SGN*X.shape[0]*sp.misc.comb(X.shape[1], 2))}
+_task_size_2d = {'ji':lambda X: BYTE_OF_FLOAT32*(3*DIM_OF_SGN*DIM_OF_SGN*X.shape[1]), 'wji':lambda X: BYTE_OF_FLOAT32*(6*DIM_OF_SGN*DIM_OF_SGN*X.shape[1]), 'wsf':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*DIM_OF_SGN*X.shape[1]), 'wkt':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*DIM_OF_SGN*X.shape[1]+12*DIM_OF_SGN*DIM_OF_SGN*sp.misc.comb(X.shape[1], 2))}
 
 def dge2simmt():
 	# from sklearn.externals.joblib import Parallel, delayed
@@ -588,6 +762,8 @@ def dge2simmt():
 	from sklearn.preprocessing import MultiLabelBinarizer
 	locs = opts.loc.split(SC)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	if (type(kwargs) is str): kwargs = ast.literal_eval(kwargs)
+	sim_method = kwargs.setdefault('sim_method', 'ji')
 	method = kwargs.setdefault('method', 'cd')
 	_method = method.lower()
 	basenames, input_exts = zip(*[os.path.splitext(os.path.basename(loc)) for loc in locs])
@@ -598,12 +774,17 @@ def dge2simmt():
 	elif (input_exts[0] == '.npz'):
 		excel_dfs = [io.read_df(loc) for loc in locs]
 	dge_dir = kwargs.setdefault('dge_dir', os.path.join(gsc.GEO_PATH, 'dge'))
-	simmt_file = os.path.join(dge_dir, _method, 'simmt.npz')
+	simmt_file = os.path.join(opts.cache if opts.output is None else opts.output, 'simmt.npz')
 	idx_cols = kwargs.setdefault('idx_cols', 'disease_name;;drug_name;;gene_symbol').split(SC)
 	cache_f = os.path.join(opts.cache, 'udgene.pkl')
 	signed = True if (int(kwargs.setdefault('signed', 1)) == 1) else False
 	weighted = True if (int(kwargs.setdefault('weighted', 1)) == 1) else False
+	if (weighted): assert(sim_method.startswith('w'))
+	sim_kwargs = {}
+	if ('sf' in sim_method): 
+		sim_kwargs['wfunc'] = kwargs.setdefault('wfunc', 'iota')
 	# Read the data
+	print 'Differentially expressed genes are calculated by %s...' % method
 	if (os.path.exists(cache_f)):
 		io.inst_print('Reading cache...')
 		ids, id_bndry = io.read_obj(cache_f)
@@ -638,7 +819,7 @@ def dge2simmt():
 			unrolled_pvaldict = func.flatten_list(pvaldict)
 		# Transform the up-down regulate gene expression data into binary matrix
 		mlb = MultiLabelBinarizer(sparse_output=True)
-		udgene_spmt = mlb.fit_transform(unrolled_udgene).astype('int8')
+		udgene_spmt = mlb.fit_transform(unrolled_udgene)
 		if (not sp.sparse.isspmatrix_csr(udgene_spmt)):
 			udgene_spmt = udgene_spmt.tocsr()
 		# Construct the corresponding pvalue matrix
@@ -657,33 +838,31 @@ def dge2simmt():
 		simmt = io.read_df(simmt_file, with_idx=True, sparse_fmt=opts.spfmt)
 	else:
 		# Calculate the global similarity matrix across all the collections
-		io.inst_print('Calculating the %s similarity matrix...' % ('signed' if signed else 'unsigned'))
+		io.inst_print('Calculating the %s similarity matrix using %s...' % ('signed' if signed else 'unsigned', sim_method))
 		# Serial method
 		# simmt = pd.DataFrame(np.ones((len(ids), len(ids))), index=ids, columns=ids)
 		# for i, j in itertools.combinations(range(len(ids)), 2):
 			# similarity = _sji(udgene[i], udgene[j])
 			# simmt.iloc[i, j] = similarity
 			# simmt.iloc[j, i] = similarity
-			
+		
+		# Deal with weighted data
 		if (weighted):
-			udgene_mt = sp.sparse.csr_matrix((pvalue_spmt.data * udgene_spmt.data, udgene_spmt.indices, udgene_spmt.indptr), shape=udgene_spmt.shape).astype('float32').toarray()
+			udgene_mt = sp.sparse.csr_matrix(((1 - pvalue_spmt.data) * udgene_spmt.data, udgene_spmt.indices, udgene_spmt.indptr), shape=udgene_spmt.shape).astype('float32').toarray()
 			del pvalue_spmt
 		else:
 			udgene_spmt = udgene_spmt.astype('float32') # Numpy only support parallelism for float32/64
 			udgene_mt = udgene_spmt.toarray()
 		del udgene_spmt
 		
-		
-		# Parallel method
-		# similarity = dstclc.parallel_pairwise(udgene_mt, None, _jim, n_jobs=opts.np, min_chunksize=2)
-		
-		# Weighted method
-		# sim_method = _wjim_iter_1d if (weighted) else _jim
-		# similarity = sim_method(udgene_mt, udgene_mt, signed=signed)
-		
-		# Parallel weighted method
-		similarity = _wjim_iter_2d_mltp(udgene_mt, udgene_mt, signed=signed, ramsize=RAMSIZE, n_jobs=opts.np)
-		
+		if (opts.np > 1):
+			# Multi-processing method
+			# similarity = dstclc.parallel_pairwise(udgene_mt, None, _sim_method[sim_method], n_jobs=opts.np, min_chunksize=2)
+			similarity = _iter_2d_mltp(udgene_mt, udgene_mt, _sim_method[sim_method], signed=signed, ramsize=RAMSIZE, task_size_f=_task_size_2d[sim_method], n_jobs=opts.np, ipp_profile=opts.ipp, cache_path=opts.cache, **sim_kwargs)
+		else:
+			# Non-multi-processing method
+			similarity = _sim_method[sim_method](udgene_mt, udgene_mt, signed=signed, **sim_kwargs)
+
 		# Tensor data structure
 		# udgene_cube = udgene_mt.reshape((-1, 2, udgene_mt.shape[1]))
 		# similarity = _sjic(udgene_cube, udgene_cube)
@@ -702,9 +881,9 @@ def dge2simmt():
 def simhrc():
 	sys.setrecursionlimit(10000)
 	simmt = io.read_df(opts.loc, with_idx=True)
-	plot.plot_clt_hrc(simmt.as_matrix(), dist_metric='precomputed', fname=os.path.splitext(os.path.basename(opts.loc))[0])
+	plot.plot_clt_hrc(simmt.as_matrix(), dist_metric='precomputed', fname=os.path.splitext(os.path.basename(opts.loc))[0], plot_cfg=plot_common_cfg)
 	
-	
+## Single collection of signatures to similarity matrix
 def onto2simmt():
 	from scipy.sparse import coo_matrix
 	def filter(txt_list):
@@ -724,20 +903,72 @@ def onto2simmt():
 		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
 		exit(1)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
-	col_name, db_name = kwargs['col_name'], kwargs['db_name']
-	ontog = sparql.SPARQL('http://localhost:8890/%s/query' % db_name)
-	fn_func = ontology.define_obo_fn(ontog, type='exact', prdns=[('obowl', ontology.OBOWL)], eqprds={})
-	distmt, vname = ontology.transitive_closure_dsg(ontog, excel_df[col_name].tolist(), find_neighbors=fn_func, filter=filter)
+	col_name, db_name, closure_kwargs = kwargs['col_name'], kwargs['db_name'], dict([('max_length', kwargs.setdefault('max_length', 3))])
+	noid, lang = gsc.DB2ATTR[db_name]['noid'], gsc.DB2LANG[db_name]
+	ontog = sparql.SPARQL('http://localhost:8890/%s/query' % db_name, use_cache=common_cfg.setdefault('memcache', False), timeout=opts.timeout)
+	fn_func = ontology.define_fn(ontog, type='exact', has_id=not noid, lang=lang, prdns=[(k, getattr(ontology, v)) for k, v in gsc.DB2INTPRDS[db_name]], eqprds={})
+	distmt, vname = ontology.transitive_closure_dsg(ontog, excel_df[col_name].tolist(), find_neighbors=fn_func, filter=filter, **closure_kwargs)
 	if (distmt.shape[1] == 0):
 		print 'Could not find any neighbors using exact matching. Using fuzzy matching instead...'
-		fn_func = ontology.define_obo_fn(ontog, type='fuzzy', prdns=[('obowl', ontology.OBOWL)], eqprds={})
-		distmt, vname = ontology.transitive_closure_dsg(ontog, excel_df[col_name].tolist(), find_neighbors=fn_func, filter=filter)
+		fn_func = ontology.define_fn(ontog, type='fuzzy', has_id=not noid, lang=lang, prdns=[(k, getattr(ontology, v)) for k, v in gsc.DB2INTPRDS[db_name]], eqprds={})
+		distmt, vname = ontology.transitive_closure_dsg(ontog, excel_df[col_name].tolist(), find_neighbors=fn_func, filter=filter, **closure_kwargs)
 	simmt = coo_matrix((1-dstclc.normdist(distmt.data.astype('float32')), (distmt.row, distmt.col)), shape=distmt.shape)
 	simmt.setdiag(1)
 	sim_df = pd.DataFrame(simmt.toarray(), index=vname, columns=vname)
 	io.write_df(sim_df, 'simmt_%s_%s.npz' % (col_name, db_name), with_idx=True, sparse_fmt=opts.spfmt, compress=True)
+
+
+## Two collections of signatures within one ontology database to similarity matrix
+def onto22simmt():
+	from scipy.sparse import coo_matrix
+	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	fnames = kwargs['fnames'].split(SC)
+	input_ext = os.path.splitext(fnames[0])[1]
+	if (input_ext == '.xlsx' or input_ext == '.xls'):
+		excel_dfs = [pd.read_excel(os.path.join(opts.loc, fname)) for fname in fnames]
+	elif (input_ext == '.csv'):
+		excel_dfs = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in fnames]
+	elif (input_ext == '.npz'):
+		excel_dfs = [io.read_df(os.path.join(opts.loc, fname)) for fname in fnames]
+	else:
+		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
+		exit(1)
+	col_names, db_name, closure_kwargs = kwargs['col_names'].split(SC), kwargs['db_name'], dict([('max_length', kwargs.setdefault('max_length', 3))])
+	# Make sure that the column name in the dataframe contains the keywords of the identifier name space
+	idnss = [[(idns[0], getattr(ontology, idns[1])) for k, v in gsc.DB2IDNS[db_name].iteritems() if k in col_name for idns in v ][0] for col_name in col_names]
+	noid, lang, filt_func, clean_func = gsc.DB2ATTR[db_name]['noid'], gsc.DB2LANG[db_name], ontology.filter_result(db_name), ontology.clean_result(db_name)
+	full_items = [['%s%s'%(idns[1],ontology.replace_invalid_sparql_str(item)) for item in df[col_name]] for df, col_name, idns in zip(excel_dfs, col_names, idnss)] if noid else [df[col_name].tolist() for df, col_name in zip(excel_dfs, col_names)]
+	ontog = sparql.SPARQL('http://localhost:8890/%s/query' % db_name, use_cache=common_cfg.setdefault('memcache', False), timeout=opts.timeout)
+	fn_func = ontology.define_fn(ontog, type='exact', has_id=not noid, lang=lang, idns=idnss, prdns=[(k, getattr(ontology, v)) for k, v in gsc.DB2INTPRDS[db_name]], eqprds={})
+	distmt, vname = ontology.transitive_closure_dsg(ontog, full_items[0]+full_items[1], find_neighbors=fn_func, filter=filt_func, cleaner=clean_func, **closure_kwargs)
+	if (distmt.shape[1] == 0):
+		print 'Could not find any neighbors using exact matching. Using fuzzy matching instead...'
+		fn_func = ontology.define_fn(ontog, type='fuzzy', has_id=not noid, lang=lang, idns=idnss, prdns=[(k, getattr(ontology, v)) for k, v in gsc.DB2INTPRDS[db_name]], eqprds={})
+		distmt, vname = ontology.transitive_closure_dsg(ontog, full_items[0]+full_items[1], find_neighbors=fn_func, filter=filt_func, cleaner=clean_func, **closure_kwargs)
+	simmt = coo_matrix((1-dstclc.normdist(distmt.data.astype('float32')), (distmt.row, distmt.col)), shape=distmt.shape)
+	simmt.setdiag(1)
+	vname = [x.lstrip(idnss[0][1]).lstrip(idnss[1][1]) for x in vname] if noid else vname
+	sim_df = dict(values=simmt, shape=simmt.shape, index=vname, columns=vname)
+	io.write_spdf(sim_df, 'simmt_%s_%s.npz' % ('-'.join(col_names), db_name), with_idx=True, sparse_fmt=opts.spfmt, compress=True)
+
+
+## Two collections of signatures across two ontology databases to similarity matrix
+def ontoc2simmt():
+	locs = opts.loc.split(SC)
+	basenames, input_exts = zip(*[os.path.splitext(os.path.basename(loc)) for loc in locs])
+	simmts = [io.read_spdf(loc, with_idx=True, sparse_fmt=opts.spfmt) for loc in locs]
+	columns = [simmt['columns'] for simmt in simmts]
+	olcol = list(set.intersection(*[set(col) for col in columns]))
+	olcol_idx = [pd.Series(range(len(col)), index=col).loc[olcol].tolist() for col in columns]
+	olsimmts = [simmt['values'][:,ol_idx] for simmt, ol_idx in zip(simmts, olcol_idx)]
+	infer_simmt = np.dot(olsimmts[0].toarray(), olsimmts[1].toarray().T)
+	infer_simmt[infer_simmt > 1] = 1
+	infer_simmt[infer_simmt < -1] = -1
+	sim_df = dict(values=infer_simmt, shape=infer_simmt.shape, index=simmts[0]['index'], columns=simmts[1]['index'])
+	fname = 'simmt_%s.npz' % '-'.join([bn.split('-')[0].strip('simmt_') for bn in basenames])
+	io.write_spdf(sim_df, fname, with_idx=True, sparse_fmt=opts.spfmt, compress=True)
 	
-	
+
 def ddi2simmt():
 	from bionlp.spider import rxnav
 	from scipy.sparse import coo_matrix
@@ -942,14 +1173,26 @@ def ppi2simmt():
 	io.write_df(sim_df, 'simmt_gene_%s.npz' % col_name, with_idx=True, sparse_fmt=opts.spfmt, compress=True)
 	
 	
+def sgn_overlap():
+	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	sgn_files, cmp_sgn_files = kwargs['sgns'].split(SC), kwargs['cmp_sgn'].split(SC)
+	for i, (sgn_f, cmp_sgn_f) in enumerate(zip(sgn_files, cmp_sgn_files)):
+		sgn_df = pd.read_csv(os.path.join(opts.loc, sgn_f))
+		cmp_sgn_df = pd.read_csv(os.path.join(opts.loc, cmp_sgn_f))
+		sgn_set = set(zip(sgn_df['ctrl_ids'], sgn_df['pert_ids']))
+		cmp_sgn_set = set(zip(cmp_sgn_df['ctrl_ids'], cmp_sgn_df['pert_ids']))
+		num_sgn, num_cmp_sgn, num_intrct = len(sgn_set), len(cmp_sgn_set), len(sgn_set & cmp_sgn_set)
+		print 'Signature group %i: our signatures: %i (sole %i), compared signatures: %i (sole %i), intersection: %s' % (i, num_sgn, num_sgn-num_intrct, num_cmp_sgn, num_cmp_sgn-num_intrct, num_intrct)
+
+
 def sgn_eval():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
-	excel_df, true_simmt = pd.read_csv(os.path.join(opts.loc, kwargs['sgn'])), io.read_df(os.path.join(opts.loc, kwargs['truesim']), with_idx=True, sparse_fmt=opts.spfmt)
+	excel_df, true_simmt = pd.read_csv(kwargs['sgn']), io.read_df(kwargs['truesim'], with_idx=True, sparse_fmt=opts.spfmt)
 	col_name, sgn_simdfs, sgnsim_lbs, truesim_lb = kwargs['col_name'], kwargs['sgnsims'].split(SC), kwargs['sgnsim_lbs'].split(SC), kwargs['truesim_lb']
 	# Only compare the overlap symbols
 	sgn_symbols, gt_symbols = [str(x).lower() for x in excel_df[col_name]], [str(x).lower() for x in true_simmt.index]
 	true_simmt.index, true_simmt.columns = gt_symbols, gt_symbols
-	true_simmt = func.unique_rowcol(true_simmt, merge='sum')
+	true_simmt = func.unique_rowcol_df(true_simmt, merge='sum')
 	true_simmt[true_simmt >= 0.5] = 1
 	true_simmt[true_simmt < 0.5] = 0
 	gt_symbols = [str(x).lower() for x in true_simmt.index]
@@ -958,7 +1201,7 @@ def sgn_eval():
 	olgt_simmt = true_simmt.loc[olgt_symbols, olgt_symbols]
 	roc_data, roc_labels = [], []
 	for sgn_simdf_f, sgnsim_lb in zip(sgn_simdfs, sgnsim_lbs):
-		sgn_simdf = io.read_df(os.path.join(opts.loc, sgn_simdf_f), with_idx=True, sparse_fmt=opts.spfmt).fillna(value=0).abs()
+		sgn_simdf = io.read_df(sgn_simdf_f, with_idx=True, sparse_fmt=opts.spfmt).fillna(value=0).abs()
 		print 'Signature and ground truth similarity matrix size: %s, %s' % (sgn_simdf.shape, true_simmt.shape)
 		# Record the id map
 		sgn_simmt = sgn_simdf.as_matrix()
@@ -977,10 +1220,58 @@ def sgn_eval():
 			# print sgn_simmt[unique_idx[olgt_symbols[x]],:][:,unique_idx[olgt_symbols[y]]]
 			pred_simmt[x, y] = pred_simmt[y, x] = min(1, sgn_simmt[unique_idx[olgt_symbols[x]],:][:,unique_idx[olgt_symbols[y]]].max())
 		print 'Ground truth and prediction size: %s, %s' % (olgt_simmt.shape, pred_simmt.shape)
-		io.write_spmt(olgt_simmt, 'truth_mt.npz', sparse_fmt=opts.spfmt, compress=True)
-		io.write_spmt(pred_simmt, 'pred_mt.npz', sparse_fmt=opts.spfmt, compress=True)
+		io.write_spmt(olgt_simmt, 'truth_mt_%s.npz'%sgnsim_lb.replace(' ', '_').lower(), sparse_fmt=opts.spfmt, compress=True)
+		io.write_spmt(pred_simmt, 'pred_mt_%s.npz'%sgnsim_lb.replace(' ', '_').lower(), sparse_fmt=opts.spfmt, compress=True)
 		# Calculate the metrics
 		fpr, tpr, roc_auc, thrshd = metric.mltl_roc(olgt_simmt.as_matrix(), pred_simmt, average=opts.avg)
+		roc_data.append([fpr, tpr])
+		roc_labels.append('%s (AUC=%0.2f)' % (sgnsim_lb, roc_auc))
+	# Plot the figures
+	plot.plot_roc(roc_data, roc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='roc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=plot_common_cfg)
+	# plot.plot_prc(prc_data, prc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='prc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=plot_common_cfg)
+
+	
+def cross_sgn_eval():
+	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	excel_dfs, true_simmt = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], io.read_spdf(kwargs['truesim'], with_idx=True, sparse_fmt=opts.spfmt)
+	col_names, sgn_simdfs, sgnsim_lbs, truesim_lb = kwargs['col_names'].split(SC), kwargs['sgnsims'].split(SC), kwargs['sgnsim_lbs'].split(SC), kwargs['truesim_lb']
+	# Only compare the overlap symbols
+	sgn_symbols, gt_symbols = [[unicode(x).lower() for x in excel_df[col_name]] for excel_df, col_name in zip(excel_dfs, col_names)], [[unicode(x).lower() for x in symbs] for symbs in [true_simmt['index'], true_simmt['columns']]]
+	true_simmt['index'], true_simmt['columns'] = gt_symbols[0], gt_symbols[1]
+	true_simmt['values'], true_simmt['shape'], true_simmt['index'], true_simmt['columns'] = func.unique_rowcol(sp.sparse.lil_matrix(true_simmt['values']), true_simmt['index'], true_simmt['columns'], merge='sum')
+	true_simmt['values'] = sp.sparse.csr_matrix(true_simmt['values'])
+	true_simmt['values'].data[true_simmt['values'].data >= 0.5] = 1
+	true_simmt['values'].data[true_simmt['values'].data < 0.5] = 0
+	gt_symbols = [[unicode(x).lower() for x in symbs] for symbs in [true_simmt['index'], true_simmt['columns']]]
+	overlaps = [set(sgn_symbol) & set(gt_symbol) for sgn_symbol, gt_symbol in zip(sgn_symbols, gt_symbols)]
+	olgt_symbols = [[x for x in gt_symbol if x in overlap] for overlap, gt_symbol in zip(overlaps, gt_symbols)]
+	olgt_simmt = true_simmt['values'][pd.Series(range(len(true_simmt['index'])), index=true_simmt['index']).loc[olgt_symbols[0]].tolist(),:][:,pd.Series(range(len(true_simmt['columns'])), index=true_simmt['columns']).loc[olgt_symbols[1]].tolist()]
+	roc_data, roc_labels = [], []
+	for sgn_simdf_f, sgnsim_lb in zip(sgn_simdfs, sgnsim_lbs):
+		sgn_simdf = io.read_df(sgn_simdf_f, with_idx=True, sparse_fmt=opts.spfmt).fillna(value=0).abs()
+		print 'Signature and ground truth similarity matrix size: %s, %s' % (sgn_simdf.shape, true_simmt['shape'])
+		# Record the id map
+		sgn_simmt = sgn_simdf.as_matrix()
+		id_map = dict(zip(sgn_simdf.index, range(sgn_simdf.shape[0])))
+		# Find out the unique symbol and their signatures
+		unique_idx = {}
+		for excel_df, col_name in zip(excel_dfs, col_names):
+			for id, symbol in zip(excel_df['id'], excel_df[col_name]):
+				unique_idx.setdefault(unicode(symbol).lower(), []).append(id_map[id])
+		for k, v in unique_idx.iteritems():
+			unique_idx[k] = np.array(v)
+		# Construct the predicted similarity matrix
+		pred_simmt = np.zeros((len(olgt_symbols[0]), len(olgt_symbols[1])), dtype='float32')
+		for x, y in itertools.product(range(len(olgt_symbols[0])), range(len(olgt_symbols[1]))):
+			# print olgt_symbols[x], olgt_symbols[y]
+			# print unique_idx[olgt_symbols[x]], unique_idx[olgt_symbols[y]]
+			# print sgn_simmt[unique_idx[olgt_symbols[x]],:][:,unique_idx[olgt_symbols[y]]]
+			pred_simmt[x, y] = min(1, sgn_simmt[unique_idx[olgt_symbols[0][x]],:][:,unique_idx[olgt_symbols[1][y]]].max())
+		print 'Ground truth and prediction size: %s, %s' % (olgt_simmt.shape, pred_simmt.shape)
+		io.write_spmt(olgt_simmt, 'truth_mt_%s.npz'%sgnsim_lb.replace(' ', '_').lower(), sparse_fmt=opts.spfmt, compress=True)
+		io.write_spmt(pred_simmt, 'pred_mt_%s.npz'%sgnsim_lb.replace(' ', '_').lower(), sparse_fmt=opts.spfmt, compress=True)
+		# Calculate the metrics
+		fpr, tpr, roc_auc, thrshd = metric.mltl_roc(olgt_simmt.toarray(), pred_simmt, average=opts.avg)
 		roc_data.append([fpr, tpr])
 		roc_labels.append('%s (AUC=%0.2f)' % (sgnsim_lb, roc_auc))
 	# Plot the figures
@@ -1012,7 +1303,6 @@ def cmp_sim_list():
 	for ol in overlaps:
 		rankls = [rank_list[x] for x in np.where(excel_df[col_name] == ol)[0] if len(rank_list[x]) > 0]
 		if (not rankls): continue
-		print ol
 		max_length = max([len(x) for x in rankls])
 		rankl = [collections.Counter([x[l] for x in rankls if len(x) > l]).most_common(1)[0][0] for l in range(max_length)]
 		y_true.append(rankl)
@@ -1023,6 +1313,88 @@ def cmp_sim_list():
 	plot.plot_roc(roc_data, roc_labels, fname='roc_%s_%s' % (sim_lb, rankl_lb), plot_cfg=plot_common_cfg)
 	
 	
+def simmt2gml():
+	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	simmt = io.read_spdf(kwargs['simmt'], with_idx=True, sparse_fmt=opts.spfmt)
+	excel_dfs, col_names = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], kwargs['col_names'].split(SC)
+	id2gse = dict(reduce(operator.add, [list(zip(df['id'], df['geo_id'])) for df in excel_dfs]))
+	id2subj = dict(reduce(operator.add, [list(zip(df['id'], df[col])) for df, col in zip(excel_dfs, col_names)]))
+	gse_Y = io.read_df(os.path.join(gsc.DATA_PATH, 'gse_Y.npz'), with_idx=True)
+	G = nx.Graph()
+	G.add_nodes_from([(idx,dict(subj='' if id2subj[idx] is np.nan else id2subj[idx], subj_type=np.where(gse_Y.loc[id2gse[idx]]==1)[0][0].item())) for idx in simmt['index']])
+	G.add_edges_from([(simmt['index'][k[0]], simmt['columns'][k[1]], dict(similarity=v.item())) for k, v in simmt['values'].todok().iteritems()])
+	nx.write_graphml(G, '%s.graphml' % os.path.splitext(os.path.basename(kwargs['simmt']))[0])
+	
+	
+def plot_simmt():
+	import graph_tool.all as gt
+	import math
+	g = gt.load_graph(opts.loc)
+	vertex_cmap = {0:(0,0,1,1), 1:(0,1,0,1), 2:(1,0,0,1)}
+	edge_cmap = {True:(1,1,0,1), False:(0,1,1,1)}
+	vcolor, ecolor = g.new_vertex_property('vector<double>'), g.new_edge_property('vector<double>')
+	g.vertex_properties['vcolor'], g.edge_properties['ecolor'] = vcolor, ecolor
+	for v in g.vertices():
+		vcolor[v] = vertex_cmap[g.vertex_properties['subj_type'][v]]
+	for e in g.edges():
+		ecolor[e] = edge_cmap[g.edge_properties['similarity'][e] > 0]
+	t = gt.Graph()
+	for v in g.vertices():
+		t.add_vertex()
+	dizs, drug, gene, root = t.add_vertex(), t.add_vertex(), t.add_vertex(), t.add_vertex()
+	t.add_edge(root,dizs)
+	t.add_edge(root,drug)
+	t.add_edge(root,gene)
+
+	for tv in t.vertices():
+		if t.vertex_index[tv] < g.num_vertices():
+			if g.vertex_properties['subj_type'][tv] == 0:
+				t.add_edge(dizs,tv)
+			elif g.vertex_properties['subj_type'][tv] == 1:
+				t.add_edge(drug,tv)
+			elif g.vertex_properties['subj_type'][tv] == 2:
+				t.add_edge(gene,tv)
+	tpos = pos = gt.radial_tree_layout(t, t.vertex(t.num_vertices() - 1), weighted=True)
+	cts = gt.get_hierarchy_control_points(g, t, tpos)
+	pos = g.own_property(tpos)
+
+	text_rot = g.new_vertex_property('double')
+	g.vertex_properties['text_rot'] = text_rot
+	for v in g.vertices():
+		if pos[v][0] >0:
+			text_rot[v] = math.atan(pos[v][1]/pos[v][0])
+		else:
+			text_rot[v] = math.pi + math.atan(pos[v][1]/pos[v][0])
+
+	gt.graph_draw(g, pos=pos,
+				  vertex_size=10,
+				  vertex_color=g.vertex_properties['vcolor'],
+				  vertex_fill_color=g.vertex_properties['vcolor'],
+				  edge_control_points=cts,
+				  vertex_text=g.vertex_properties['subj'],
+				  vertex_text_rotation=g.vertex_properties['text_rot'],
+				  vertex_text_position=1,
+				  vertex_font_size=9,
+				  edge_color=g.edge_properties['ecolor'],
+				  vertex_anchor=0,
+				  bg_color=[0,0,0,1],
+				  output_size=[4096,4096],
+				  output='hreb.pdf')
+				  
+				  
+def plot_simmt_hrc():
+	sys.setrecursionlimit(10000)
+	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	simmt = io.read_spdf(kwargs['simmt'], with_idx=True, sparse_fmt=opts.spfmt)
+	excel_dfs, col_names = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], kwargs['col_names'].split(SC)
+	id2subj = dict(reduce(operator.add, [list(zip(df['id'], df[col])) for df, col in zip(excel_dfs, col_names)]))
+	axis_label = ['' if id2subj[idx] is np.nan else id2subj[idx] for idx in simmt['index']]
+	simmt_values = np.nan_to_num(simmt['values'].toarray())
+	# border = max(abs(simmt_values.min()), abs(simmt_values.max()))
+	border = 0.03
+	plot.plot_clt_hrc(simmt_values, xlabel='Signature', ylabel='Signature', dist_metric='precomputed', dist_func=lambda x: 1-np.abs(x), plot_cfg=plot_common_cfg, mat_size=(0.8,0.9), linkage_method='ward', rcntx_linewidth=0.005, dndrgram_truncate_mode='level', dndrgram_p=10, dndrgram_color_threshold=3.0, matshow_vmin=-border, matshow_vmax=border, cbarclim_vmin=-border, cbarclim_vmax=border, cbartick_fontsize=5)
+
+
 def plot_clt(is_fuzzy=False, threshold='0.5'):
 	Xs, Ys, labels = gsc.get_data(None, type='gsm', from_file=True, fmt=opts.fmt, spfmt=opts.spfmt)
 	for i, (X, Y, label) in enumerate(zip(Xs, Ys, labels)):
@@ -1033,9 +1405,9 @@ def plot_clt(is_fuzzy=False, threshold='0.5'):
 				thrshd = getattr(label, threshold)()
 			label[label >= thrshd] = 1
 			label[label < thrshd] = 0
-			plot.plot_fzyclt(X.as_matrix(), label.as_matrix(), fname='clustering_%i' % i)
+			plot.plot_fzyclt(X.as_matrix(), label.as_matrix(), fname='clustering_%i' % i, plot_cfg=plot_common_cfg)
 		else:
-			plot.plot_clt(X.as_matrix(), label.as_matrix().reshape((label.shape[0],)), fname='clustering_%i' % i)
+			plot.plot_clt(X.as_matrix(), label.as_matrix().reshape((label.shape[0],)), fname='clustering_%i' % i, plot_cfg=plot_common_cfg)
 			
 			
 def plot_sampclt(with_cns=False):
@@ -1082,6 +1454,7 @@ def plot_sampclt(with_cns=False):
 		]}
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	metric = kwargs.setdefault('metric', 'euclidean')
+	build_mst = kwargs.setdefault('build_mst', True)
 	a = kwargs.setdefault('a', 0.5)
 	for cltid, clusters in cluster_sets.iteritems():
 		if (opts.pid != -1 and opts.pid != cltid):
@@ -1100,8 +1473,8 @@ def plot_sampclt(with_cns=False):
 		## Calculate the distance
 		D = dstclc.cns_dist(X.as_matrix(), C=constraint, metric=metric, a=a, n_jobs=opts.np)
 		## Construct a KNN graph
-		# KNNG = kneighbors_graph(D, 4, mode='distance', metric='precomputed', n_jobs=opts.np).tocoo()
-		KNNG = radius_neighbors_graph(D, 0.5, mode='distance', metric='precomputed', n_jobs=opts.np).tocoo()
+		KNNG = kneighbors_graph(D, 4, mode='distance', metric='precomputed', n_jobs=opts.np).tocoo()
+		# KNNG = radius_neighbors_graph(D, 0.5, mode='distance', metric='precomputed', n_jobs=opts.np).tocoo()
 		## Construct the graph
 		G = nx.Graph()
 		G.add_nodes_from([(idx, dict(id=vid)) for idx, vid in enumerate(vertices)])
@@ -1114,8 +1487,9 @@ def plot_sampclt(with_cns=False):
 		## Save the graph
 		nx.write_gml(G, 'sampclt_%i.gml' % cltid)
 		## Construct the MST graph
-		G = nx.minimum_spanning_tree(G)
-		edges = G.edges()
+		if (build_mst):
+			G = nx.minimum_spanning_tree(G)
+			edges = G.edges()
 		## Set the layout of the graph
 		pos = nx.nx_pydot.graphviz_layout(G)
 		# pos = nx.nx_pydot.pydot_layout(G)
@@ -1140,8 +1514,367 @@ def plot_sampclt(with_cns=False):
 		if (plot.MON):
 			plt.show()
 		else:
-			plt.savefig('sampclt_%i' % cltid)
+			plt.savefig('sampclt_%i.pdf' % cltid, format='pdf')
 		plt.close()
+		
+		
+def plot_circos():
+	import matplotlib as mpl
+	import matplotlib.pyplot as plt
+	import rpy2.robjects as ro
+	from rpy2.robjects import numpy2ri as np2r
+	from rpy2.robjects import pandas2ri as pd2r
+	from rpy2.robjects.packages import importr
+	np2r.activate()
+	pd2r.activate()
+	ro.r('library(circlize)')
+	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	top_k = kwargs.setdefault('topk', 10)
+	top_i = kwargs.setdefault('topi', 1)
+	dizs_sgnfile, dizs_dgeloc = kwargs['dizs'].split(SC)
+	drug_sgnfile, drug_dgeloc = kwargs['drug'].split(SC)
+	gene_sgnfile, gene_dgeloc = kwargs['gene'].split(SC)
+	dizs_sgndf, drug_sgndf, gene_sgndf = pd.read_csv(os.path.join(opts.loc, dizs_sgnfile), index_col='id'), pd.read_csv(os.path.join(opts.loc, drug_sgnfile), index_col='id'), pd.read_csv(os.path.join(opts.loc, gene_sgnfile), index_col='id')
+	subjtype_sgn_map = {'Disease':dizs_sgndf, 'Drug':drug_sgndf, 'Gene':gene_sgndf}
+	subjtype_col_map = {'Disease':'disease_name', 'Drug':'drug_name', 'Gene':'hs_gene_symbol'}
+	gsm_Xs, gsm_Ys, _ = gsc.get_mltl_npz(type='gsm', lbs=['0', '1', '2'], mltlx=False, spfmt=opts.spfmt)
+	subjtype_y_map = {'Disease':gsm_Ys[0], 'Drug':gsm_Ys[1], 'Gene':gsm_Ys[2]}
+	# Prepare the combined data
+	io.inst_print('Preparing the data for circos plot...')
+	dfname = kwargs.setdefault('data', 'data.npz')
+	cache_f = os.path.join(opts.cache, dfname)
+	if (os.path.exists(cache_f)):
+		io.inst_print('Reading cache for combined data...')
+		data = io.read_df(cache_f, with_idx=True)
+		io.inst_print('Finish reading cache for combined data...')
+	else:
+		sgn_dfs = []
+		for subjtype, sgndf in subjtype_sgn_map.iteritems():
+			df = sgndf[['ctrl_ids', 'pert_ids', 'geo_id', 'Organisms', 'cell_type', 'Platforms', subjtype_col_map[subjtype]]]
+			df.rename(columns={'Organisms': 'organisms', subjtype_col_map[subjtype]: 'subject'}, inplace=True)
+			df['subject_type'] = [subjtype] * df.shape[0]
+			sgn_dfs.append(df)
+		data = pd.concat(sgn_dfs).reset_index()
+		io.write_df(data, cache_f, with_idx=True)
+	# Prepare the differential gene expression data, p-values are used to select the data
+	dgevalf, dgepvalf = os.path.join(opts.cache, 'dge_df.npz'), os.path.join(opts.cache, 'dgepval_df.npz')
+	if (os.path.exists(dgevalf) and os.path.exists(dgepvalf)):
+		io.inst_print('Reading cache for differential gene expression data...')
+		dge_df = io.read_df(dgevalf, with_idx=True)
+		dge_pvals = io.read_npz(dgepvalf)['data']
+		io.inst_print('Finish reading cache for differential gene expression data...')
+	else:
+		subjtype_sgnidx_map = {'Disease':pd.DataFrame(np.arange(dizs_sgndf.shape[0]), index=dizs_sgndf.index), 'Drug':pd.DataFrame(np.arange(drug_sgndf.shape[0]), index=drug_sgndf.index), 'Gene':pd.DataFrame(np.arange(gene_sgndf.shape[0]), index=gene_sgndf.index)}
+		subjtype_dgeloc_map = {'Disease':dizs_dgeloc, 'Drug':drug_dgeloc, 'Gene':gene_dgeloc}
+		dge_vals, dge_pvals = [], []
+		for idx, row in data.iterrows():
+			dge_fname = 'dge_%i.npz' % subjtype_sgnidx_map[row['subject_type']].loc[row['id']]
+			df = io.read_df(os.path.join(subjtype_dgeloc_map[row['subject_type']], dge_fname), with_idx=True).replace([np.inf, -np.inf], np.nan).dropna()
+			dge_abs = np.abs(df['statistic']).astype('float32')
+			# df = df[dge_abs > dge_abs.mean()]
+			if (df.shape[0] == 0):
+				dge_pvals.append(np.nan)
+				continue
+			df = sampling.samp_df(df, n=min(30, df.shape[0]), reset_idx=True)
+			dge_vals.append(pd.DataFrame(data={'dge_val':df['statistic'].tolist(), 'subject':[row['subject']]*df.shape[0]}, index=[idx]*df.shape[0]))
+			dge_vals[-1]['dge_val'] = dge_vals[-1]['dge_val'].astype('float32')
+			dge_pvals.append(df['pvalue'].max())
+		dge_df = pd.concat(dge_vals)
+		# io.inst_print([dge_df.dtypes, dge_df.dge_val.min(), dge_df.dge_val.max()])
+		dge_df['dge_val'] = dge_df['dge_val'].astype('float16')
+		dge_df.dropna(inplace=True)
+		dge_pvals = np.array(dge_pvals)
+		io.write_df(dge_df, dgevalf, with_idx=True, compress=True)
+		io.write_npz(dge_pvals, dgepvalf)
+	# Normalize the differential gene expression value
+	# if (dge_df['dge_val'].min() < 0):
+		# dge_df['dge_val'] = dge_df['dge_val'] - dge_df['dge_val'].min() + 1
+	# dge_df['dge_val'][dge_df['dge_val'] > 1] = 1
+	# dge_df['dge_val'][dge_df['dge_val'] <= 0] = 2
+	# dge_df['dge_val'][dge_df['dge_val'] == 2] = dge_df['dge_val'].min()
+	# dge_df['dge_val'] = dstclc.normdist(dge_df['dge_val'], range=(0.1, 0.9))
+	# dge_df['dge_val'] = np.log10(dge_df['dge_val'])
+	# dge_df.dropna(inplace=True)
+	dge_df['dge_val'] = np.log10(dge_df['dge_val'].astype('float16'))
+	# dge_df['dge_val'] = dge_df['dge_val'].astype('float16')
+	dge_df = dge_df.replace([np.inf, -np.inf], np.nan).dropna()
+	# Append the p-value column
+	data['dge_pval'] = dge_pvals
+	data.dropna(inplace=True)
+	# data['dge_pval'] = np.random.random(data.shape[0])
+	io.inst_print('Selecting the data and preparing for the first track...')
+	# Select the most significant signatures and transport the combined data
+	# top_data = []
+	# for k, idx in data.groupby('subject_type').groups.iteritems():
+		# top_data.append(data.loc[idx].sort_values('dge_pval').head(top_k))
+	# Select the signatures in the case studies
+	slct_subj = ['Levetiracetam', 'Phenytoin', 'Estradiol', 'Genistein', 'melanoma', 'Lysophosphatidic acid', 'juvenile rheumatoid arthritis', 'melanoma in situ', 'prostate cancer', 'Celecoxib', 'Mehp', 'Perfluorooctanoic acid', 'Fluoxetine', 'Decitabine', "3,3',4,4'-tetrachlorobiphenyl", 'POR', 'Estradiol', 'Tretinoin', 'Cobalt dichloride hexahydrate', 'D-serine']
+	slct_subjtype = [data['subject_type'][np.where(data['subject']==x)[0][0]] for x in slct_subj] # subject type
+	slct_idx = [i for i, x in enumerate(data['subject']) if x in slct_subj] # selected indices
+	subjtype_cnt = collections.Counter(slct_subjtype) # counter for each subject type
+	top_data = [data.iloc[slct_idx]]
+	for k, idx in data.groupby('subject_type').groups.iteritems():
+		if (top_k <= subjtype_cnt[k]): continue
+		ordered_data = data.loc[idx].sort_values('dge_pval') # reorder the data according to the dge pvalues
+		sup_subj = [x for x in func.remove_duplicate(ordered_data['subject']) if x not in slct_subj]
+		sup_subj = sup_subj[:min(len(sup_subj), top_k - subjtype_cnt[k])]# find more subjects to show
+		if (len(sup_subj) != 0):
+			top_data.append(ordered_data.iloc[[i for i, x in enumerate(ordered_data['subject']) if x in sup_subj]])
+	data = pd.concat(top_data)
+	data.to_csv('circos_data.csv')
+	dge_df = dge_df.loc[data.index]
+	rdf = pd2r.py2ri(data)
+	ro.r.assign('data', rdf)
+	io.inst_print('Finish selecting the data and preparing for the first track...')
+	# Prepare the data for the second track, control/perturbation sample points
+	io.inst_print('Preparing the data for the second track...')
+	ctrl_gsmy_dfs, pert_gsmy_dfs = [], []
+	for ctrl_ids, pert_ids, subject, subjtype in zip(data['ctrl_ids'], data['pert_ids'], data['subject'], data['subject_type']):
+		ctrl_samps, pert_samps = ctrl_ids.split('|'), pert_ids.split('|')
+		ctrl_gsmy, pert_gsmy = subjtype_y_map[subjtype].loc[ctrl_samps], subjtype_y_map[subjtype].loc[pert_samps]
+		ctrl_gsmy['subject'] = [subject] * len(ctrl_samps)
+		pert_gsmy['subject'] = [subject] * len(pert_samps)
+		ctrl_gsmy_dfs.append(ctrl_gsmy)
+		pert_gsmy_dfs.append(pert_gsmy)
+	ctrl_gsmy, pert_gsmy = pd.concat(ctrl_gsmy_dfs).reset_index().drop_duplicates(), pd.concat(pert_gsmy_dfs).reset_index().drop_duplicates()
+	ctrl_gsmy['ctrl'][ctrl_gsmy['ctrl'] == 0], ctrl_gsmy['pert'][ctrl_gsmy['pert'] == 0] = -1, -1
+	pert_gsmy['ctrl'][pert_gsmy['ctrl'] == 0], pert_gsmy['pert'][pert_gsmy['pert'] == 0] = -1, -1
+	ax_margin = 0.2
+	ctrl_gsmy['x'], pert_gsmy['x'] = ctrl_gsmy['ctrl'] * np.random.uniform(ax_margin, 1-ax_margin, ctrl_gsmy.shape[0]), pert_gsmy['ctrl'] * np.random.uniform(ax_margin, 1-ax_margin, pert_gsmy.shape[0])
+	ctrl_gsmy['y'], pert_gsmy['y'] = ctrl_gsmy['pert'] * np.random.uniform(ax_margin, 1-ax_margin, ctrl_gsmy.shape[0]), pert_gsmy['pert'] * np.random.uniform(ax_margin, 1-ax_margin, pert_gsmy.shape[0])
+	ctrl_gsmy, pert_gsmy = pd2r.py2ri(ctrl_gsmy), pd2r.py2ri(pert_gsmy)
+	ro.r.assign('ctrl_gsmy', ctrl_gsmy)
+	ro.r.assign('pert_gsmy', pert_gsmy)
+	io.inst_print('Finish preparing the data for the second track...')
+	# Prpare the data for the third track, differential gene expression data
+	io.inst_print('Preparing the data for the third track...')
+	# dge_df = sampling.samp_df(dge_df, n=100, key='subject', filt_func=lambda x: x[x['dge_val'] != 0], reset_idx=True)
+	dge_df = sampling.samp_df(dge_df, n=100, key='subject', reset_idx=True).drop_duplicates()
+	dge_dfs = []
+	for k, gp in dge_df.groupby('subject'):
+		hist, bins = np.histogram(gp['dge_val'])
+		idx = np.digitize(gp['dge_val'], bins)
+		gp['bins'] = idx
+		gp = sampling.samp_df(gp, n=5, key='bins', reset_idx=True)
+		del gp['bins']
+		dge_dfs.append(gp)
+	dge_df = pd.concat(dge_dfs)
+	io.write_df(dge_df, 'dge_df.npz', with_idx=True)
+	# io.inst_print([dge_df['subject'].shape, dge_df['dge_val'].shape])
+	dge_rdf = pd2r.py2ri(dge_df)
+	ro.r.assign('dge_df', dge_rdf)
+	# ro.r('''write.csv(dge_df, 'dge_df.csv')''')
+	# ro.r('''dge_df <- read.csv('dge_df.csv')''')
+	io.inst_print('Finish preparing the data for the third track...')
+	# Prepare the data for the fourth track, cell type
+	io.inst_print('Preparing the data for the fourth track...')
+	unq_celltype = list(set(data['cell_type']))
+	# unq_celltype = [x.title() for x in set(data['cell_type'])]
+	# data['cell_type'] = [x.title() for x in data['cell_type']]
+	celltype_map = dict(zip(unq_celltype, range(len(unq_celltype))))
+	celltype_cmap = plt.cm.get_cmap('Set3', len(unq_celltype))
+	celltype_colors = [mpl.colors.rgb2hex(y) for y in np.array([list(celltype_cmap(celltype_map[x]))[:3] for x in data['cell_type']])]
+	ro.r.assign('unq_celltype', unq_celltype)
+	ro.r.assign('celltype_colors', celltype_colors)
+	ro.r('names(celltype_colors) <- data$cell_type')
+	ro.r('unq_celltype_col <- celltype_colors[unlist(unq_celltype)]')
+	io.inst_print('Finish preparing the data for the fourth track...')
+	# Prepare the data for the fifth track, signature density (deprecated)
+	sgn_subidx = pd.Series(np.zeros(data.shape[0]), index=data['subject'])
+	sgn_colors = pd.Series(np.zeros(data.shape[0], dtype='|S7'), index=data['subject'])
+	subj_cnt = collections.Counter(data.subject)
+	sgn_nums = subj_cnt.values()
+	sgn_unq_nums = list(set(sgn_nums))
+	sgn_unq_idx = np.arange(len(sgn_unq_nums))
+	sgn_unq_idx[np.argsort(sgn_unq_nums)] = sgn_unq_idx
+	sgn_cm = dict(zip(sgn_unq_nums, sgn_unq_idx))
+	sgnnum_cmap = plt.cm.get_cmap('cool', len(sgn_unq_nums))
+	cell_margin = 0.05
+	for k, v in subj_cnt.iteritems():
+		if (0.1 * v > 1 - 2 * cell_margin):
+			sgn_subidx.loc[k] = np.arange(1, v+1, dtype='float32') / (v + 1)
+		else:
+			sgn_subidx.loc[k] = np.arange(1, v+1, dtype='float32') / (v + 1) * (1 + 2 * cell_margin) - cell_margin
+		sgn_colors.loc[k] = [mpl.colors.rgb2hex(sgnnum_cmap(sgn_cm[v])[:3])] * v if (v > 1) else mpl.colors.rgb2hex(sgnnum_cmap(sgn_cm[v])[:3])
+	ro.r.assign('sgn_subidx', sgn_subidx.tolist())
+	ro.r.assign('sgn_colors', sgn_colors.tolist())
+	ro.r('names(sgn_colors) <- data$subject')
+	# Prepare the data for the fifth track, p-value of the differential gene expression
+	io.inst_print('Preparing the data for the fifth track...')
+	dge_pval_range = [max(0,1-data['dge_pval'].max()), min(1,1-data['dge_pval'].min())]
+	cm_norm = mpl.colors.Normalize(vmin=dge_pval_range[0], vmax=dge_pval_range[1])
+	dgepval_cmap = mpl.cm.ScalarMappable(norm=cm_norm, cmap=mpl.cm.YlOrBr)
+	dgepval_colors = [mpl.colors.rgb2hex(func.flatten_list(dgepval_cmap.to_rgba([1-x]).tolist())[:3]) for x in data['dge_pval']]
+	ro.r.assign('dgepval_colors', dgepval_colors)
+	ro.r('names(dgepval_colors) <- 1:nrow(data)')
+	dgepval_range = np.linspace(dge_pval_range[0], dge_pval_range[1], num=5)
+	# dgepval_range = np.array([dge_pval_range[0], (dge_pval_range[0]+dge_pval_range[1])/2, dge_pval_range[1]])
+	ro.r.assign('dgepval_range', dgepval_range)
+	# ro.r.assign('dgepval_colrange', [mpl.colors.rgb2hex(func.flatten_list(dgepval_cmap.to_rgba([x]).tolist())[:3]) for x in dgepval_range][::-1])
+	ro.r.assign('dgepval_colrange', ['#FFFFD4', '#FED98E', '#FE9929', '#D95F0E', '#993404'][::-1])
+	io.inst_print('Finish preparing the data for the fifth track...')
+	# Prepare the data for the sixth track, organisms
+	io.inst_print('Preparing the data for the sixth track...')
+	unq_orgnsm = list(set(data['organisms']))
+	orgnsm_map = dict(zip(unq_orgnsm, range(len(unq_orgnsm))))
+	orgnsm_cmap = plt.cm.get_cmap('Set2', 8)
+	orgnsm_colors = [mpl.colors.rgb2hex(plot.mix_white(orgnsm_cmap(2*orgnsm_map[x])[:3], ratio=0.2)) for x in data['organisms']]
+	ro.r.assign('unq_orgnsm', unq_orgnsm)
+	ro.r.assign('orgnsm_colors', orgnsm_colors)
+	ro.r('names(orgnsm_colors) <- data$organisms')
+	ro.r('unq_orgnsm_col <- orgnsm_colors[unlist(unq_orgnsm)]')
+	io.inst_print('Finish preparing the data for the sixth track...')
+	# Prepare the data for the Chord diagram
+	io.inst_print('Preparing the data for the Chord diagram...')
+	simmt = io.read_df(kwargs['simmt'], with_idx=True, sparse_fmt=opts.spfmt)
+	# simmt.values[np.diag_indices_from(simmt)] = 0
+	simmt = simmt.ix[data['id'], data['id']]
+	data_with_idx = data.set_index('id')
+	# Change the index to subject
+	simmt.index = data_with_idx.loc[simmt.index]['subject']
+	simmt.columns = data_with_idx.loc[simmt.columns]['subject']
+	# Remove the duplicate index
+	simmt.values[:,:] = np.abs(simmt.values)
+	simmt = func.unique_rowcol_df(simmt, merge='sum')
+	# Normalize the similarity matrix
+	simmt.values[:,:] = dstclc.normdist(simmt.values, range=[0.01,0.99])
+	np.fill_diagonal(simmt.values, 0)
+	# Offset of the similarity values
+	sim_offset = np.concatenate([np.zeros((simmt.shape[0],1)), (simmt.values / simmt.values.sum(axis=1).reshape((-1,1)).repeat(simmt.shape[1], axis=1)).cumsum(axis=1)], axis=1)
+	rsim_offset = np2r.numpy2ri(sim_offset)
+	ro.r.assign('sim_offset', rsim_offset)
+	# Select the top i similarity
+	min_colnum = simmt.shape[1] - top_i
+	if (min_colnum > 0):
+		simmt.values[np.arange(simmt.shape[0]).reshape((-1,1)).repeat(min_colnum, axis=1).flatten(), simmt.values.argsort(axis=1)[:,:min_colnum].flatten()] = 0
+		simmt.values[simmt.values.argsort(axis=0)[:min_colnum,:].flatten(), np.arange(simmt.shape[1]).reshape((1,-1)).repeat(min_colnum, axis=0).flatten()] = 0
+	# simmt[simmt > 0] = 1
+	# rsimmt = pd2r.py2ri(simmt) # py2ri cannot transfer duplicate index
+	rsimmt = np2r.numpy2ri(simmt.values)
+	ro.r.assign('simmt', rsimmt)
+	simmt_idx = pd2r.py2ri(pd.Series(simmt.index))
+	ro.r.assign('simmt_idx', simmt_idx)
+	ro.r('rownames(simmt) <- simmt_idx')
+	ro.r('colnames(simmt) <- simmt_idx')
+	ro.r('simmt_size <- dim(simmt)')
+	io.inst_print('Finish preparing the data for the Chord diagram...')
+	io.inst_print('Finish preparing the data for circos plot...')
+
+	# Run the R commands
+	ro.r('subj_fa <- factor(data$subject)')
+	ro.r('subj_lev <- levels(subj_fa)')
+	ro.r('subjtype_fa <- factor(data$subject_type)')
+	ro.r('subjtype_lev <- levels(subjtype_fa)')
+	ro.r('par(mar=c(2,0,0,0))')
+	ro.r('''circos.par('canvas.xlim'=c(-1.4,1.4))''')
+	ro.r('''circos.par('canvas.ylim'=c(-1.4,1.0))''')
+	ro.r('''circos.par('track.height'=0.05)''')
+	ro.r('''circos.par('track.margin'=c(0.005,0.005))''')
+	ro.r('''circos.par('gap.degree'=0)''')
+	ro.r('''circos.par('cell.padding'=c(0, 0, 0, 0))''')
+	ro.r('''circos.par('points.overflow.warning'=FALSE)''')
+	ro.r('''circos.initialize(factors=subj_fa, xlim=c(0,1))''')
+	# Chord diagram
+	# ro.r(r'''chordDiagram(simmt, keep.diagonal=FALSE, reduce=-1, annotationTrack=NULL, preAllocateTracks=list(list(track.height=0.05, track.margin=c(0.005,0)), list(track.height=0.1, track.margin=c(0.005,0.005), cell.padding=c(0.01,0.01)), list(track.height=0.1, track.margin=c(0.005,0.005), cell.padding=c(0.03,0.03)), list(track.height=0.05, track.margin=c(0.001, 0.005)), list(track.height=0.05, track.margin=c(0.001,0.001)), list(track.height=0.05, track.margin=c(0.001,0.001)), list(track.height=0.05, track.margin=c(0,0.001))))''')
+	# First track, subject name & subject type
+	ro.r(r'''circos.track(factors=subj_fa, ylim=c(0,1), track.index=1, track.height=0.05, track.margin=c(0.005,0), bg.border=NA, panel.fun=function(x, y) {
+		xlim <- get.cell.meta.data('xlim')
+		ylim <- get.cell.meta.data('ylim')
+		sector.index <- get.cell.meta.data('sector.index')
+		circos.text(mean(xlim), ylim[2] + uy(1, 'mm'), 
+			sector.index, adj=c(0, 0.025), cex=0.3, facing='clockwise', niceFacing=TRUE)
+	})''')
+	ro.r(r'''highlight.sector(data$subject[data$subject_type==subjtype_lev[1]], track.index=1, col='blue', border=NA, cex=0.8, text.col='white', niceFacing=TRUE)''')
+	ro.r(r'''highlight.sector(data$subject[data$subject_type==subjtype_lev[2]], track.index=1, col='green', border=NA, cex=0.8, text.col='white', niceFacing=TRUE)''')
+	ro.r(r'''highlight.sector(data$subject[data$subject_type==subjtype_lev[3]], track.index=1, col='red', border=NA, cex=0.8, text.col='white', niceFacing=TRUE)''')
+	# Second track
+	ro.r(r'''circos.track(factors=subj_fa, ylim=c(-1,1), track.index=2, track.height=0.1, track.margin=c(0.005,0.005), cell.padding=c(0.01,0.01,0.01,0.01))''')
+	ro.r(r'''circos.trackPoints(factors=ctrl_gsmy$subject, x=ctrl_gsmy$x, y=ctrl_gsmy$y, track.index=2, pch=20, cex=0.2, col='#FFBC22')''')
+	ro.r(r'''circos.trackPoints(factors=pert_gsmy$subject, x=pert_gsmy$x, y=pert_gsmy$y, track.index=2, pch=20, cex=0.2, col='#5519A1')''')
+	# Third track
+	ro.r('''circos.par('cell.padding'=c(0.03, 0.05, 0.03, 0.05))''')
+	ro.r(r'''circos.trackHist(factors=dge_df$subject, x=scale(dge_df$dge_val), bin.size=0.1, track.index=3, track.height=0.1, force.ylim=FALSE, col='#999999', border='#999999')''')
+	ro.r('''circos.par('cell.padding'=c(0, 0, 0, 0))''')
+	# ro.r(r'''circos.track(factors=subj_fa, ylim=c(0,1), track.index=3, track.height=0.1)''')
+	# Fourth track
+	ro.r(r'''circos.track(factors=subj_fa, ylim=c(0,1), track.index=4, track.height=0.05, track.margin=c(0, 0.005), bg.border=NA)''')
+	ro.r(r'''mapply(function(k, v){
+		highlight.sector(data$subject[data$cell_type==k], track.index=4, col=add_transparency(v, 0.8), border=NA, cex=0.8, text.col='white', niceFacing=TRUE)
+	}, names(celltype_colors), celltype_colors)''')
+	# Fifth track
+	# ro.r(r'''circos.track(factors=subj_fa, x=sgn_subidx, ylim=c(0,1), track.index=5, track.height=0.05, track.margin=c(0.001,0.001), bg.border=NA, panel.fun=function(x, y) {
+		# xlim <- get.cell.meta.data('xlim')
+		# ylim <- get.cell.meta.data('ylim')
+		# xrange <- xlim[2] - xlim[1]
+		# xcenter <- get.cell.meta.data('xcenter')
+		# sector.index <- get.cell.meta.data('sector.index')
+		# numx <- length(x)
+		# for (sub_x in x) {
+			# x_coord <- xlim[1] + sub_x * xrange
+			# circos.rect(x_coord-ux(0.05, 'mm'), 0, x_coord+ux(0.05, 'mm'), ylim[2], col=toString(sgn_colors[sector.index]), border=NA)
+		# }
+	# })''')
+	ro.r(r'''circos.track(factors=subj_fa, x=sgn_subidx, y=1:nrow(data), track.index=5, track.height=0.05, track.margin=c(0,0.001), bg.border=NA, panel.fun=function(x, y) {
+		xlim <- get.cell.meta.data('xlim')
+		ylim <- get.cell.meta.data('ylim')
+		xrange <- xlim[2] - xlim[1]
+		xcenter <- get.cell.meta.data('xcenter')
+		sector.index <- get.cell.meta.data('sector.index')
+		numx <- length(x)
+		for (sub_idx in 1:numx) {
+			x_coord <- xlim[1] + x[[sub_idx]] * xrange
+			circos.rect(x_coord-ux(0.05, 'mm'), 0, x_coord+ux(0.05, 'mm'), ylim[2], col=toString(dgepval_colors[y[sub_idx]]), border=NA)
+		}
+	})''')
+	# Sixth track
+	ro.r(r'''circos.track(factors=subj_fa, ylim=c(0,1), track.index=6, track.height=0.05, track.margin=c(0.001,0.001), bg.border=NA)''')
+	ro.r(r'''mapply(function(k, v){
+		highlight.sector(data$subject[data$organisms==k], track.index=6, col=v, border=NA, cex=0.8, text.col='white', niceFacing=TRUE)
+	}, names(orgnsm_colors), orgnsm_colors)''')
+	# Links
+	ro.r(r'''col_fun = colorRamp2(c(0.001,0.025,0.05), c('beige','coral2','darkmagenta'))''')
+	ro.r(r'''for (i in 1:simmt_size[1]) {
+		for (j in 1:simmt_size[2]) {
+			if (simmt[i,j] > 0) {
+				circos.link(simmt_idx[i], sim_offset[i,j:(j+1)], 
+					simmt_idx[j], sim_offset[j,i:(i+1)],
+					col=add_transparency(col_fun(simmt[i,j]), 0.4),
+					h.ratio=0.6)
+			}
+		}
+	}''')
+	# Legend
+	ro.r('library(stringr)')
+	ro.r('library(ComplexHeatmap)')
+	ro.r(r'''lgd_subjtype = Legend(at=c('Disease', 'Drug', 'Gene'), type='points', pch=15, size=unit(4,'mm'), legend_gp=gpar(col=c('blue','green','red')), title_position='topleft', title='Collection')''')
+	ro.r(r'''lgd_sample = Legend(at=c('Control', 'Perturbation'), type='points', pch=16, size=unit(3,'mm'), legend_gp=gpar(col=c('#FFBC22','#5519A1')), title_position='topleft', title='Sample')''')
+	ro.r(r'''lgd_celltype = Legend(at=unlist(lapply(unq_celltype, str_to_title)), nrow=NULL, ncol=5, type='points', pch=15, size=unit(2,'mm'), legend_gp=gpar(col=unlist(unq_celltype_col)), title_position='topleft', title='Crowdsourcing Tissue/Cell Annotation', labels_gp=gpar(fontsize=5), title_gp=gpar(fontsize=10, fontface='bold'), grid_height=unit(2,'mm'), grid_width=unit(2,'mm'), gap=unit(0.5,'mm'))''')
+	ro.r(r'''lgd_orgnsm = Legend(at=unlist(unq_orgnsm), type='points', pch=15, size=unit(4,'mm'), legend_gp=gpar(col=unlist(unq_orgnsm_col)), title_position='topleft', title='Organism')''')
+	ro.r(r'''lgd_dgepval = Legend(at=c(0,1), col_fun=colorRamp2(unlist(dgepval_range), unlist(dgepval_colrange)), title_position='topleft', title='DGE P-value')''')
+	ro.r(r'''lgd_links = Legend(at=c(0.01,0.03,0.05), col_fun=col_fun, title_position='topleft', title='Association')''')
+
+	ro.r(r'''pushViewport(viewport(x=unit(45,'mm'), y=unit(2,'mm'), 
+		width = grobWidth(lgd_celltype), 
+		height = grobHeight(lgd_celltype), 
+		just = c('left', 'bottom')))''')
+	ro.r('''grid.draw(lgd_celltype)''')
+	ro.r('''upViewport()''')
+	ro.r(r'''lgd_vlist_l = packLegend(lgd_subjtype, lgd_sample, lgd_orgnsm)''')
+	ro.r(r'''lgd_vlist_r = packLegend(lgd_dgepval, lgd_links)''')
+	ro.r(r'''pushViewport(viewport(x=unit(2,'mm'), y=unit(2,'mm'), 
+		width = grobWidth(lgd_vlist_l), 
+		height = grobHeight(lgd_vlist_l), 
+		just = c('left', 'bottom')))''')
+	ro.r('''grid.draw(lgd_vlist_l)''')
+	ro.r('''upViewport()''')
+	ro.r(r'''pushViewport(viewport(x=unit(1,'npc')-unit(2,'mm'), y=unit(2,'mm'), 
+		width = grobWidth(lgd_vlist_r), 
+		height = grobHeight(lgd_vlist_r), 
+		just = c('right','bottom')))''')
+	ro.r('''grid.draw(lgd_vlist_r)''')
+	ro.r('''upViewport()''')
+	# Cleanup
+	ro.r('circos.clear()')
 
 
 def main():
@@ -1178,26 +1911,44 @@ def main():
 		sgn2ge()
 	elif (opts.method == 's2d'):
 		sgn2dge()
+	elif (opts.method == 'pltdgep'):
+		plot_dgepval()
 	elif (opts.method == 'd2s'):
 		dge2simmt()
 	elif (opts.method == 'simhrc'):
 		simhrc()
 	elif (opts.method == 'o2s'):
 		onto2simmt()
+	elif (opts.method == 'o22s'):
+		onto22simmt()
+	elif (opts.method == 'oc2s'):
+		ontoc2simmt()
 	elif (opts.method == 'ddis'):
 		ddi2simmt()
 	elif (opts.method == 'ppis'):
 		ppi2simmt()
+	elif (opts.method == 'sgno'):
+		sgn_overlap()
 	elif (opts.method == 'sgne'):
 		sgn_eval()
+	elif (opts.method == 'csgne'):
+		cross_sgn_eval()
 	elif (opts.method == 'c2s'):
 		cmp2sim()
 	elif (opts.method == 'csl'):
 		cmp_sim_list()
+	elif (opts.method == 's2gml'):
+		simmt2gml()
+	elif (opts.method == 'pltsim'):
+		plot_simmt()
+	elif (opts.method == 'pltsimhrc'):
+		plot_simmt_hrc()
 	elif (opts.method == 'pltclt'):
 		plot_clt(opts.fuzzy, threshold=opts.thrshd)
 	elif (opts.method == 'smpclt'):
 		plot_sampclt(with_cns=opts.cns)
+	elif (opts.method == 'circos'):
+		plot_circos()
 
 
 if __name__ == '__main__':
@@ -1215,8 +1966,10 @@ if __name__ == '__main__':
 	op.add_option('-o', '--output', help='the path to store the data')
 	op.add_option('-u', '--fuzzy', action='store_true', dest='fuzzy', default=False, help='use fuzzy clustering')
 	op.add_option('-d', '--cns', action='store_true', dest='cns', default=False, help='use constraint clustering')
-	op.add_option('-r', '--thrshd', default='mean', type='str', dest='thrshd', help='threshold value')
+	op.add_option('-r', '--thrshd', default='mean', dest='thrshd', help='threshold value')
 	op.add_option('-w', '--cache', default='.cache', help='the location of cache files')
+	op.add_option('-q', '--ipp', default='', help='the ipyparallel cluster profile')
+	op.add_option('-z', '--timeout', help='timeout seconds')
 	op.add_option('-m', '--method', help='main method to run')
 	op.add_option('-v', '--verbose', action='store_true', dest='verbose', default=False, help='display detailed information')
 	

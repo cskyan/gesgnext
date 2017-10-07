@@ -11,13 +11,14 @@ gsx_extrc:
     sample_dir: 
     ge_dir: 
     dge_dir: 
-	
+
 gsx_helper:
 - function: common
   params:
     FUSEKI_ENV: 
     FUSEKI_PATH: 
-	RAMSIZE: 4
+    RAMSIZE: 4
+    memcache: False
 
 bionlp.spider.gsc:
 - function: init
@@ -29,7 +30,7 @@ bionlp.spider.gsc:
     BIOGRID_PATH:
     HGNC_PATH:
     DNORM_PATH:
-	
+
 bionlp.spider.hgnc:
 - function: init
   params:
@@ -43,10 +44,14 @@ bionlp.util.plot:
   params:
     save_obj: False
     save_npz: False
+    notitle: False
+    fmt: png
+    style: 
 
 bionlp.txtclf:
 - function: cross_validate
   params:
+    group_by_name: False
     save_crsval_idx: False
     save_crsval_pred: False
     save_perf_avg: True
