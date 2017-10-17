@@ -91,6 +91,7 @@ After cloning the repository, you can download some pre-generated datasets [here
 
 Filename | Description  
 --- | ---
+signatures.zip | Constructed Signatures
 gse_doc.pkl | Series documents
 gsm_doc.pkl | Sample documents
 orig_gse_X.npz | Annotated Series dataset
@@ -104,7 +105,22 @@ udt_gsm_X_[0-2].npz | Annotated Sample dataset for [disease\|drug\|gene] derived
 gse_Y.npz | Subject type labels
 gsm_Y.npz | Control/perturbation sample labels
 gsm_y_[0-2].npz | Control/perturbation sample labels for [disease\|drug\|gene]
-gsm_lb_0.npz | Sample group labels for [disease\|drug\|gene]
+gsm_lb_[0-2].npz | Sample group labels for [disease\|drug\|gene]
+circos_cache.tar.gz | Circos plot cache
+demo_signatures.zip | Demo constructed signatures
+demo_gse_doc.pkl | Demo Series documents
+demo_gsm_doc.pkl | Demo Sample documents
+demo_gse_X.npz | Demo annotated Series dataset
+demo_gsm_X.npz | Demo annotated Sample dataset
+demo_gsm_X_[0-2].npz | Demo annotated Sample dataset for [disease\|drug\|gene]
+demo_gsm_y_[0-2].npz | Demo control/perturbation sample labels for [disease\|drug\|gene]
+demo_gsm_lb_[0-2].npz | Demo sample group labels for [disease\|drug\|gene]
+demo_data.tar.gz | Demo sample data
+demo_gedata.tar.gz | Demo Gene Expression Data
+demo_dge.tar.gz | Demo Differential Gene Expression Data
+demo_simmt.tar.gz | Demo similarity network
+demo_circos_cache.tar.gz | Demo circos plot cache
+
 
 **In order to locate the dataset you want to use, please remove the prefixes of 'orig_', 'creeds_', and 'udt_'. And change the parameter `DATA_PATH` of module `bionlp.spider.gsc` inside `etc/config.yaml` into the location of 'X.npz'.**
 
