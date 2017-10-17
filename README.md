@@ -10,15 +10,22 @@ The following instructions will help you get a copy of the source code as well a
 
 Firstly, you need to install a Python Interpreter (tested 2.7.12) and these packages:
 
-* numpy (tested 1.11.1)
-* scipy (tested 1.11.1)
-* matplotlib (tested 1.5.1)
-* pandas (tested 0.18.1)
-* scikit-learn (tested 0.17.1)
+* numpy (tested 1.13.1)
+* scipy (tested 0.19.1)
+* matplotlib (tested 2.0.2)
+* pandas (tested 0.20.3)
+* scikit-learn (tested 0.19.0)
 * optunity (tested 1.1.1)
-* pyyaml (test 3.11)
-* openpyxl (test 2.3.2)
-* rdflib \[optional\] \(tested 4.2.1\)
+* binarytree (tested 2.0.1)
+* pyyaml (test 3.12)
+* openpyxl (test 2.4.8)
+* pymemcache \[optional\] \(tested 1.4.3\)
+* rdflib \[optional\] \(tested 4.2.2\)
+* becas \[optional\] \(tested 1.0.3\)
+* apiclient \[optional\] \(tested 1.0.3\)
+* graphviz \[optional\] \(tested 2.38.0\)
+* r-essentials \[optional\] \(tested 1.6.0\)
+* rpy2 \[optional\] \(tested 2.8.5\)
 
 The simplest way to get started is to use [Anaconda](https://www.continuum.io/anaconda-overview) Python distribution. If you have limited disk space, the [Miniconda](http://conda.pydata.org/miniconda.html) installer is recommended. After installing Miniconda and adding the path of folder `bin` to `$PATH` variable, run the following command:
 
