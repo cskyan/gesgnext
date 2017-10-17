@@ -36,15 +36,15 @@ from sklearn.linear_model import LogisticRegression, RidgeClassifier, SGDClassif
 from sklearn.svm import SVC, LinearSVC
 from sklearn.neural_network import MLPClassifier
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier, BaggingClassifier, AdaBoostClassifier, GradientBoostingClassifier
-from xgboost import XGBClassifier
+# from xgboost import XGBClassifier
 from sklearn.cluster import DBSCAN, AgglomerativeClustering
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.metrics.pairwise import pairwise_distances
 
-from bionlp.spider import geo, annot, hgnc, dnorm, rxnav, sparql
-from bionlp.model.fzcmeans import FZCMeans, CNSFZCMeans
+from bionlp.spider import geoxml as geo, annot, hgnc, dnorm, rxnav, sparql
+# from bionlp.model.fzcmeans import FZCMeans, CNSFZCMeans
 from bionlp.model.lda import LDACluster
 from bionlp.model import kerasext, kallima
 from bionlp.util import fs, io, func, ontology
@@ -66,7 +66,7 @@ spdr = geo
 
 
 def load_data(type='gse', pid=-1, fmt='npz', spfmt='csr'):
-	print 'Loading data for %s...' % type.upper()
+	print 'Loading data for %s ...' % type.upper()
 	try:
 		if (type == 'gsm-clf'):
 			if (pid == -1):
@@ -587,6 +587,8 @@ def gen_mdl_params():
 def all():
 	gse_clf()
 	gsm_clf()
+	gsm_clt()
+	gen_sgn()
 
 
 def gse_clf():
@@ -666,7 +668,7 @@ def gsm_clt():
 	labels = [lbs.as_matrix() if len(lbs.shape) > 1 and lbs.shape[1] > 1 else lbs.as_matrix().reshape((lbs.shape[0],)) for lbs in labels]
 	
 	## Clustering for GSM
-	print 'Clustering for GSM...'
+	print 'Clustering for GSM ...'
 	for i, (X, y, c) in enumerate(zip(Xs, labels, Ys)):
 		c = c.as_matrix()
 		# Transform the GEO IDs into constraints
@@ -713,7 +715,7 @@ def _filt_ent(entities, onto_lb):
 	return [entities[i] for i in idx if i < len(entities)]
 
 	
-def gen_sgn():
+def gen_sgn(**kwargs):
 	global cfgr
 	common_cfg = cfgr('gsx_extrc', 'common')
 	sgn_cfg = cfgr('gsx_extrc', 'gen_sgn')
@@ -728,11 +730,14 @@ def gen_sgn():
 		opts.thrshd = float(ast.literal_eval(opts.thrshd))
 	
 	if (len(sgn_cfg) > 0):
-		method = sgn_cfg['method']
-		format = sgn_cfg['format']
-		sample_dir = os.path.join('.', 'samples') if sgn_cfg['sample_dir'] is None else sgn_cfg['sample_dir']
-		ge_dir = spdr.GEO_PATH if sgn_cfg['ge_dir'] is None else sgn_cfg['ge_dir']
-		dge_dir = spdr.GEO_PATH if sgn_cfg['dge_dir'] is None else sgn_cfg['dge_dir']
+		method = kwargs.setdefault('method', sgn_cfg['method'])
+		format = kwargs.setdefault('format', sgn_cfg['format'])
+		sample_dir = kwargs.setdefault('sample_dir', os.path.join('.', 'samples') if sgn_cfg['sample_dir'] is None else sgn_cfg['sample_dir'])
+		ge_dir = kwargs.setdefault('ge_dir', spdr.GEO_PATH if sgn_cfg['ge_dir'] is None else sgn_cfg['ge_dir'])
+		dge_dir = kwargs.setdefault('dge_dir', spdr.GEO_PATH if sgn_cfg['dge_dir'] is None else sgn_cfg['dge_dir'])
+	else:
+		print 'Configuration file is missing!'
+		exit(-1)
 	
 	## Load data for GSM and the association
 	Xs, Ys, labels, gsm2gse = load_data(type='sgn', pid=pid, fmt=opts.fmt, spfmt=opts.spfmt)
@@ -1059,7 +1064,7 @@ def tuning_gse():
 		gse_Y = gse_Y.as_matrix().reshape((gse_Y.shape[0],))
 	
 	## Parameter tuning for GSE
-	print 'Parameter tuning for GSE is starting...'
+	print 'Parameter tuning for GSE is starting ...'
 	ext_params = dict(folds=opts.kfold, n_iter=opts.maxt)
 	params_generator = gen_mdl_params() if opts.dend is None else gen_nnmdl_params(gse_X.shape[1], gse_Y.shape[1] if len(gse_Y.shape) > 1 else 1)
 	for mdl_name, mdl, params in params_generator:
@@ -1082,7 +1087,7 @@ def tuning_gsm():
 	gsm_Ys = [Y.as_matrix() if len(Y.shape) > 1 and Y.shape[1] > 1 else Y.as_matrix().reshape((Y.shape[0],)) for Y in gsm_Ys]
 	
 	## Parameter tuning for GSM
-	print 'Parameter tuning for GSM is starting...'
+	print 'Parameter tuning for GSM is starting ...'
 	for i, (gsm_X, gsm_y) in enumerate(zip(gsm_Xs, gsm_Ys)):
 		gsm_X = gsm_X.as_matrix()
 		ext_params = dict(folds=opts.kfold, n_iter=opts.maxt)
@@ -1156,18 +1161,177 @@ def autoclf_gsm():
 		print show_models()
 
 
-# def demo():
-	# import urllib
-	# global cfgr
-	# if not os.path.exists('data'):
-		# os.makedirs('data')
-	# urllib.urlretrieve ('https://data.mendeley.com/datasets/s9m6tzcv9d/2/files/239690a1-3c24-45b8-96cf-ff32183d140f/udt_exp_X.npz', 'data/X.npz')
-	# urllib.urlretrieve ('https://data.mendeley.com/datasets/s9m6tzcv9d/2/files/5ad8019b-4853-462f-8a42-d5eee1a311e3/Y.npz', 'data/Y.npz')
-	# hoc.DATA_PATH = 'data'
-	# X, Y = load_data(type='gse', pid=-1, fmt=opts.fmt, spfmt=opts.spfmt)
-	# def gse_model_iter(tuned, glb_filtnames, glb_clfnames):
-		# yield 'UDT-RF', Pipeline([('clf', OneVsRestClassifier(RandomForestClassifier(max_features=0.7, min_samples_leaf=1, n_estimators=200, class_weight='balanced'), n_jobs=opts.np))])
-	# txtclf.cross_validate(X, Y, gse_model_iter, model_param=dict(tuned=False, glb_filtnames=[], glb_clfnames=[]), avg='micro', kfold=5, cfg_param=cfgr('bionlp.txtclf', 'cross_validate'), global_param=dict(comb=True, pl_names=[], pl_set=set([])), lbid=-1)
+def demo():
+	import urllib, shutil
+	global cfgr
+	url_prefix = 'https://data.mendeley.com/datasets/y7gnb79gfb/2/files/'
+	common_cfg = cfgr('gsx_extrc', 'common')
+	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
+	fs.mkdir('data')
+	io.inst_print('Downloading data for GSE ...')
+	urllib.urlretrieve (url_prefix+'570cb239-793a-4a47-abf2-979fe432a2b4/udt_gse_X.npz', 'data/gse_X.npz')
+	urllib.urlretrieve (url_prefix+'a5b3e6fd-ef9f-4157-9d9b-a49c240a8b77/gse_Y.npz', 'data/gse_Y.npz')
+	io.inst_print('Finish downloading data for GSE!')
+	gsc.DATA_PATH = 'data'
+	orig_wd = os.getcwd()
+
+	## Cross-validation for GSE
+	gse_X, gse_Y = load_data(type='gse', pid=-1, fmt=opts.fmt, spfmt=opts.spfmt)
+	gse_Y = gse_Y.as_matrix()
+	new_wd = os.path.join(orig_wd, 'gse_cv')
+	fs.mkdir(new_wd)
+	os.chdir(new_wd)
+	def gse_model_iter(tuned, glb_filtnames, glb_clfnames):
+		yield 'UDT-RF', Pipeline([('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest GSE', tuned=True, pr=pr, mltl=True, mltp=True, n_jobs=1, random_state=0))])
+	txtclf.cross_validate(gse_X, gse_Y, gse_model_iter, model_param=dict(tuned=True, glb_filtnames=[], glb_clfnames=[]), avg='micro', kfold=5, cfg_param=cfgr('bionlp.txtclf', 'cross_validate'), global_param=dict(comb=True, pl_names=[], pl_set=set([])), lbid=-1)
+	os.chdir(orig_wd)
+
+	## Cross-validation for GSM
+	io.inst_print('Downloading data for GSM ...')
+	urllib.urlretrieve (url_prefix+'8731e767-20b1-42ba-b3cc-38573df643c9/udt_gsm_X_0.npz', 'data/gsm_X_0.npz')
+	urllib.urlretrieve (url_prefix+'b4139560-f1f7-4f0c-9591-7214ffd295dc/udt_gsm_X_1.npz', 'data/gsm_X_1.npz')
+	urllib.urlretrieve (url_prefix+'fb510fa1-6a0b-4613-aa9d-3b3728acae06/udt_gsm_X_2.npz', 'data/gsm_X_2.npz')
+	urllib.urlretrieve (url_prefix+'18316de5-1478-4503-adcc-7f0fff581470/gsm_y_0.npz', 'data/gsm_y_0.npz')
+	urllib.urlretrieve (url_prefix+'0b0b84c0-9796-47e2-92e8-7a3a621a8cfe/gsm_y_1.npz', 'data/gsm_y_1.npz')
+	urllib.urlretrieve (url_prefix+'ea1acea3-4a99-479b-b5af-0a1f66a163c4/gsm_y_2.npz', 'data/gsm_y_2.npz')
+	urllib.urlretrieve (url_prefix+'f26b66ae-4887-451d-8067-933cacb4dad3/gsm_lb_0.npz', 'data/gsm_lb_0.npz')
+	urllib.urlretrieve (url_prefix+'59fd8bd2-405c-4e85-9989-ed79bac4b676/gsm_lb_1.npz', 'data/gsm_lb_1.npz')
+	urllib.urlretrieve (url_prefix+'9c08969d-579f-4695-b0a1-94226e0df495/gsm_lb_2.npz', 'data/gsm_lb_2.npz')
+	io.inst_print('Finish downloading data for GSM!')
+	gsm_Xs, gsm_Ys = load_data(type='gsm-clf', pid=-1, fmt=opts.fmt, spfmt=opts.spfmt)
+	gsm_Ys = [Y.as_matrix() if len(Y.shape) > 1 and Y.shape[1] > 1 else Y.as_matrix().reshape((Y.shape[0],)) for Y in gsm_Ys]
+	new_wd = os.path.join(orig_wd, 'gsm_cv')
+	fs.mkdir(new_wd)
+	os.chdir(new_wd)
+	
+	orig_subwd = os.getcwd()
+	for i, (X, Y) in enumerate(zip(gsm_Xs, gsm_Ys)):
+		# Switch to sub-working directory
+		new_wd = os.path.join(orig_subwd, str(i))
+		fs.mkdir(new_wd)
+		os.chdir(new_wd)
+		def gsm_model_iter(tuned, glb_filtnames, glb_clfnames, **kwargs):
+			yield 'UDT-RF', Pipeline([('clf', build_model(RandomForestClassifier, 'Classifier', 'Random Forest GSM%i'%i, tuned=True, pr=pr, mltl=True, mltp=True, n_jobs=1, random_state=0))])
+		txtclf.cross_validate(X, Y, gsm_model_iter, model_param=dict(tuned=True, glb_filtnames=[], glb_clfnames=[]), avg='micro', kfold=5, cfg_param=cfgr('bionlp.txtclf', 'cross_validate'), global_param=dict(comb=True, pl_names=[], pl_set=set([])), lbid=i)
+		os.chdir(orig_subwd)
+
+	os.chdir(orig_wd)
+	
+	## Clustering for GSM
+	fs.mkdir('orig')
+	gsc.DATA_PATH = 'orig'
+	io.inst_print('Downloading data for GSM clustering ...')
+	urllib.urlretrieve (url_prefix+'c1f2eb4d-e859-4502-ab48-de6bdc237d33/orig_gsm_X_0.npz', 'orig/gsm_X_0.npz')
+	urllib.urlretrieve (url_prefix+'e0630d62-b6ea-4511-bb7f-37b25e70a563/orig_gsm_X_1.npz', 'orig/gsm_X_1.npz')
+	urllib.urlretrieve (url_prefix+'63d8a8e0-8025-407b-be40-99a31bf8b75f/orig_gsm_X_2.npz', 'orig/gsm_X_2.npz')
+	urllib.urlretrieve (url_prefix+'3a28e780-2724-4b20-bb0d-ec808ef6cf58/gsm2gse.npz', 'orig/gsm2gse.npz')
+	shutil.copy2('data/gsm_y_0.npz', 'orig/gsm_y_0.npz')
+	shutil.copy2('data/gsm_y_1.npz', 'orig/gsm_y_1.npz')
+	shutil.copy2('data/gsm_y_2.npz', 'orig/gsm_y_2.npz')
+	shutil.copy2('data/gsm_lb_0.npz', 'orig/gsm_lb_0.npz')
+	shutil.copy2('data/gsm_lb_1.npz', 'orig/gsm_lb_1.npz')
+	shutil.copy2('data/gsm_lb_2.npz', 'orig/gsm_lb_2.npz')
+	urllib.urlretrieve (url_prefix+'18316de5-1478-4503-adcc-7f0fff581470/gsm_y_0.npz', 'orig/gsm_y_0.npz')
+	urllib.urlretrieve (url_prefix+'0b0b84c0-9796-47e2-92e8-7a3a621a8cfe/gsm_y_1.npz', 'orig/gsm_y_1.npz')
+	urllib.urlretrieve (url_prefix+'ea1acea3-4a99-479b-b5af-0a1f66a163c4/gsm_y_2.npz', 'orig/gsm_y_2.npz')
+	urllib.urlretrieve (url_prefix+'f26b66ae-4887-451d-8067-933cacb4dad3/gsm_lb_0.npz', 'orig/gsm_lb_0.npz')
+	urllib.urlretrieve (url_prefix+'59fd8bd2-405c-4e85-9989-ed79bac4b676/gsm_lb_1.npz', 'orig/gsm_lb_1.npz')
+	urllib.urlretrieve (url_prefix+'9c08969d-579f-4695-b0a1-94226e0df495/gsm_lb_2.npz', 'orig/gsm_lb_2.npz')
+	io.inst_print('Finish downloading data for GSM clustering!')
+	gsm_Xs, gsm_Ys, clt_labels, gsm2gse = load_data(type='gsm-clt', pid=-1, fmt=opts.fmt, spfmt=opts.spfmt)
+	# Select data
+	slct_gse = ['GSE14024', 'GSE4302', 'GSE54464', 'GSE5230', 'GSE6015', 'GSE4262', 'GSE11506', 'GSE8597', 'GSE43696', 'GSE13984', 'GSE1437', 'GSE12446', 'GSE41035', 'GSE5225', 'GSE53394', 'GSE30174', 'GSE16683', 'GSE6476', 'GSE1988', 'GSE32161', 'GSE16032', 'GSE2362', 'GSE46924', 'GSE4668', 'GSE4587', 'GSE1413', 'GSE3325', 'GSE484', 'GSE20054', 'GSE51207', 'GSE23702', 'GSE2889', 'GSE2880', 'GSE11237', 'GSE3189', 'GSE52711', 'GSE5007', 'GSE5315', 'GSE55760', 'GSE6878', 'GSE9118', 'GSE10748', 'GSE31773', 'GSE54657', 'GSE27011', 'GSE2600', 'GSE16874', 'GSE1468', 'GSE1566', 'GSE3868', 'GSE52452', 'GSE60413', 'GSE35765', 'GSE55945', 'GSE6887', 'GSE1153', 'GSE26309', 'GSE3418', 'GSE18965', 'GSE30076', 'GSE33223', 'GSE2606', 'GSE26910', 'GSE26834', 'GSE1402', 'GSE29077', 'GSE2195', 'GSE4768', 'GSE2236', 'GSE39452', 'GSE13044', 'GSE1588', 'GSE4514', 'GSE24592', 'GSE31280', 'GSE2018']
+	slct_idx = gsm2gse.index[[i for i, x in enumerate(gsm2gse['gse_id']) if x in slct_gse]]
+	slct_idx_set = set(slct_idx)
+	new_wd = os.path.join(orig_wd, 'gsm_clt')
+	fs.mkdir(new_wd)
+	os.chdir(new_wd)
+	
+	orig_subwd = os.getcwd()
+	for i, (X, y, c) in enumerate(zip(gsm_Xs, clt_labels, gsm_Ys)):
+		idx = np.array(list(set(X.index) & slct_idx_set))
+		X, y, c = X.loc[idx], y.loc[idx], c.loc[idx]
+		y = y.as_matrix() if len(y.shape) > 1 and y.shape[1] > 1 else y.as_matrix().reshape((y.shape[0],))
+		c = c.as_matrix()
+		# Switch to sub-working directory
+		new_wd = os.path.join(orig_subwd, str(i))
+		fs.mkdir(new_wd)
+		os.chdir(new_wd)
+		def clt_model_iter(tuned, glb_filtnames, glb_cltnames=[], **kwargs):
+			yield 'GESgnExt', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=0.5, nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=0.4, rcexp=1, cond=0.3, cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])
+		txtclt.clustering(X, clt_model_iter, model_param=dict(tuned=False, glb_filtnames=[], glb_cltnames=[]), cfg_param=cfgr('bionlp.txtclt', 'clustering'), global_param=dict(comb=True, pl_names=[], pl_set=set([])), lbid=i)
+		os.chdir(orig_subwd)
+
+	os.chdir(orig_wd)
+	fs.mkdir(opts.cache)
+	for i in range(3):
+		for fpath in fs.listf('gsm_clt/%i'%i, 'clt_pred_.*.npz', full_path=True):
+			shutil.copy2(fpath, os.path.join(opts.cache, os.path.basename(fpath)))
+	
+	## Signature Generation
+	import zipfile, tarfile
+	fs.mkdir('demo/xml')
+	fs.mkdir('gedata')
+	fs.mkdir('dge')
+	io.inst_print('Downloading the demo data ...')
+	urllib.urlretrieve (url_prefix+'83581784-4e92-4a45-97da-7204a2c51272/demo_gse_doc.pkl', 'demo/xml/gse_doc.pkl')
+	urllib.urlretrieve (url_prefix+'bbd3a925-0258-4ea6-a16b-eb61b71bef14/demo_gsm_doc.pkl', 'demo/xml/gsm_doc.pkl')
+	urllib.urlretrieve (url_prefix+'1a13eec7-b409-4ec0-840a-c5f4a3095ff9/demo_gse_X.npz', 'demo/gse_X.npz')
+	urllib.urlretrieve (url_prefix+'a24c2571-7c82-4bc7-89ae-4dd847f92f1e/demo_gsm_X.npz', 'demo/gsm_X.npz')
+	urllib.urlretrieve (url_prefix+'f861dfaa-84c6-450d-8f92-611f1ae0c28f/demo_gsm_X_0.npz', 'demo/gsm_X_0.npz')
+	urllib.urlretrieve (url_prefix+'3980bd3f-3f65-4061-a800-72443846867e/demo_gsm_X_1.npz', 'demo/gsm_X_1.npz')
+	urllib.urlretrieve (url_prefix+'62779165-1ab4-444f-90d8-e36180aee1f2/demo_gsm_X_2.npz', 'demo/gsm_X_2.npz')
+	urllib.urlretrieve (url_prefix+'c11f9e1b-acb3-46bd-b53a-8dcfa20c9678/demo_gsm_y_0.npz', 'demo/gsm_y_0.npz')
+	urllib.urlretrieve (url_prefix+'db3c095c-c4fc-4b96-a176-1be9ab3c16ae/demo_gsm_y_1.npz', 'demo/gsm_y_1.npz')
+	urllib.urlretrieve (url_prefix+'9b047f1d-c243-4b6d-8b86-4ceac49fe9a3/demo_gsm_y_2.npz', 'demo/gsm_y_2.npz')
+	urllib.urlretrieve (url_prefix+'7102ec6a-f7ba-41b8-9d2f-5999b73c4c1c/demo_gsm_lb_0.npz', 'demo/gsm_lb_0.npz')
+	urllib.urlretrieve (url_prefix+'b0418f41-e26d-4b3e-b684-b194d43b4d78/demo_gsm_lb_1.npz', 'demo/gsm_lb_1.npz')
+	urllib.urlretrieve (url_prefix+'440afe45-7a47-456a-b94b-03bfece032b1/demo_gsm_lb_2.npz', 'demo/gsm_lb_2.npz')
+	urllib.urlretrieve (url_prefix+'34f2ad12-33b0-45d3-86d5-9db8ee53ff2f/demo_data.tar.gz', 'demo/xml/demo_data.tar.gz')
+	urllib.urlretrieve (url_prefix+'0b3e472f-389e-4140-a039-26d8ebe7d760/demo_gedata.tar.gz', 'gedata.tar.gz')
+	urllib.urlretrieve (url_prefix+'594dfa6b-7e8a-4d10-9aef-f2a21c49cff2/demo_dge.tar.gz', 'dge.tar.gz')
+	with tarfile.open('demo/xml/demo_data.tar.gz', 'r:gz') as tarf:
+		tarf.extractall('demo/xml')
+	with tarfile.open('gedata.tar.gz', 'r:gz') as tarf:
+		tarf.extractall()
+	with tarfile.open('dge.tar.gz', 'r:gz') as tarf:
+		tarf.extractall()
+	shutil.copy2('orig/gsm2gse.npz', 'demo/gsm2gse.npz')
+	io.inst_print('Finish downloading the demo data!')
+	gsc.DATA_PATH = 'demo'
+	gsc.GEO_PATH = 'demo'
+	opts.mltl = True
+	# gen_sgn(sample_dir='demo', ge_dir='gedata', dge_dir='dge')
+	# Signature cache
+	io.inst_print('Downloading the signature cache ...')
+	urllib.urlretrieve (url_prefix+'4ab4f2ac-34d8-4dc0-8dc1-42b2ad2fa7bd/demo_signatures.zip', 'signatures.zip')
+	with zipfile.ZipFile('signatures.zip', 'r') as zipf:
+		zipf.extractall()
+	io.inst_print('Finish downloading the signature cache!')
+
+	## Calculate the signature similarity network
+	helper.opts = opts
+	method = 'cd'
+	io.inst_print('Downloading the cache of signature similarity network ...')
+	urllib.urlretrieve (url_prefix+'37c6ae5f-1b0f-4447-88af-347e28d7d840/demo_simmt.tar.gz', 'simmt.tar.gz')
+	with tarfile.open('simmt.tar.gz', 'r:gz') as tarf:
+		tarf.extractall()
+	io.inst_print('Finish downloading the cache of signature similarity network!')
+	if (not os.path.exists('simmt.npz')):
+		for sgnf in ['disease_signature.csv', 'drug_perturbation.csv', 'gene_perturbation.csv']:
+			basename = os.path.splitext(os.path.basename(sgnf))[0]
+			cache_path = os.path.join('dge', 'cache', basename)
+			excel_df = pd.read_csv(sgnf)
+			helper._sgn2dge(excel_df, method, os.path.join('gedata', basename), os.path.join('dge', method.lower(), basename), cache_path)
+		helper.dge2simmt(loc='disease_signature.csv;;drug_perturbation.csv;;gene_perturbation.csv', signed=1, weighted=0, sim_method='ji', method='cd', dge_dir='dge', idx_cols='disease_name;;drug_name;;gene_symbol', output='.')
+	
+	## Circos Plot
+	io.inst_print('Downloading the circos cache ...')
+	urllib.urlretrieve (url_prefix+'b81e06fa-8518-48a2-bc1a-21d864445978/demo_circos_cache.tar.gz', 'circos_cache.tar.gz')
+	with tarfile.open('circos_cache.tar.gz', 'r:gz') as tarf:
+		tarf.extractall()
+	io.inst_print('Finish downloading the circos cache!')
+	helper.plot_circos(loc='.', topk=8, topi=5, data='data.npz', simmt='simmt.npz', dizs='disease_signature.csv;;dge/limma/disease_signature', drug='drug_perturbation.csv;;dge/limma/drug_perturbation', gene='gene_perturbation.csv;;dge/limma/gene_perturbation')
 
 
 def main():
@@ -1175,7 +1339,7 @@ def main():
 		tuning(opts.ftype)
 		return
 	if (opts.method == 'demo'):
-		# demo()
+		demo()
 		return
 	elif (opts.method == 'gse_clf'):
 		gse_clf()
@@ -1205,7 +1369,7 @@ if __name__ == '__main__':
 	op.add_option('-f', '--fmt', default='npz', help='data stored format: csv or npz [default: %default]')
 	op.add_option('-s', '--spfmt', default='csr', help='sparse data stored format: csr or csc [default: %default]')
 	op.add_option('-t', '--tune', action='store_true', dest='tune', default=False, help='firstly tune the hyperparameters')
-	op.add_option('-r', '--solver', default='particle_swarm', action='store', type='str', dest='solver', help='solver used to tune the hyperparameters')
+	op.add_option('-r', '--solver', default='particle_swarm', action='store', type='str', dest='solver', help='solver used to tune the hyperparameters: particle_swarm, grid search, or random search, etc.')
 	op.add_option('-b', '--best', action='store_true', dest='best', default=False, help='use the tuned hyperparameters')
 	op.add_option('-c', '--comb', action='store_true', dest='comb', default=False, help='run the combined methods')
 	op.add_option('-l', '--mltl', action='store_true', dest='mltl', default=False, help='use multilabel strategy')

@@ -50,6 +50,7 @@ Classifier:
     max_depth: 40
     n_estimators: 200
     class_weight: balanced
+    min_impurity_decrease: 0.0000001
 ## GSM RF 0 ##
 - name: Random Forest GSM0
   params:
@@ -58,6 +59,7 @@ Classifier:
     max_depth: 10
     n_estimators: 600
     class_weight: balanced
+    min_impurity_decrease: 0.0000001
 ## GSM RF 1 ##
 - name: Random Forest GSM1
   params:
@@ -65,7 +67,7 @@ Classifier:
     min_samples_leaf: 70
     max_depth: 90
     n_estimators: 500
-    class_weight: None
+    min_impurity_decrease: 0.0000001
 ## GSM RF 2 ##
 - name: Random Forest GSM2
   params:
@@ -73,7 +75,7 @@ Classifier:
     min_samples_leaf: 40
     max_depth: 50
     n_estimators: 500
-    class_weight: None
+    min_impurity_decrease: 0.0000001
 - name: GBoost
   params:
     learning_rate: 0.95

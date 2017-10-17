@@ -57,6 +57,21 @@ def fuseki(sh='bash'):
 	proc_cmd = ' && '.join([common_cfg['FUSEKI_ENV'], '%s --port=8890 --config=$FUSEKI_HOME/run/config.ttl >/var/log/fuseki.log 2>&1 &' % 'fuseki-server' if common_cfg['FUSEKI_PATH'] is None or common_cfg['FUSEKI_PATH'].isspace() else os.path.join(common_cfg['FUSEKI_PATH'], 'fuseki-server')])
 	cmd = proc_cmd if sh == 'sh' else '%s -c "%s"' % (sh, proc_cmd)
 	shell.daemon(cmd, 'fuseki-server')
+	
+	
+def npzs2yaml(dir_path='.', mdl_t='Classifier'):
+	pw = io.param_writer(os.path.join(dir_path, 'mdlcfg'))
+	for file in fs.listf(dir_path):
+		if file.endswith(".npz"):
+			fpath = os.path.join(dir_path, file)
+			params = io.read_npz(fpath)['best_params'].tolist()
+			for k in params.keys():
+				if (type(params[k]) == np.ndarray):
+					params[k] == params[k].tolist()
+				if (isinstance(params[k], np.generic)):
+					params[k] = np.asscalar(params[k])
+			pw(mdl_t, file, params)
+	pw(None, None, None, True)
 
 
 def nt2db():
@@ -267,7 +282,7 @@ def _gsmclt_pair(X, Y, z, gsm2gse, lbid, thrshd=0.5, cache_path='.cache', fname=
 			ctrl_ids.append('|'.join(sorted(ctrl)))
 			pert_ids.append('|'.join(sorted(pert)))
 	# Write to file
-	pair_df = pd.DataFrame.from_items([('geo_ids', geo_ids), ('ctrl_ids', ctrl_ids), ('pert_ids', pert_ids)])
+	pair_df = pd.DataFrame.from_items([('geo_id', geo_ids), ('ctrl_ids', ctrl_ids), ('pert_ids', pert_ids)])
 	print 'Generated %i signatures' % pair_df.shape[0]
 	io.write_df(pair_df, cachef, with_idx=True)
 	pair_df.to_excel(fname + '.xlsx', encoding='utf8')
@@ -385,7 +400,9 @@ def _sgn2dge(excel_df, method, ge_path, saved_path, cache_path):
 		join_df = pd.concat([ctrl_df, pert_df], axis=1, join='inner')
 		print 'Start %s algorithm for No.%i %s...%s, %s, %s' % (method.upper(), i, id, ctrl_df.shape, pert_df.shape, join_df.shape)
 		# Calculate the differential gene expression vector
-		if (_method == 'cd'):
+		if (ctrl_df.shape[0] == 0 or pert_df.shape[0] == 0):
+			dge_vec, pval_vec = [], []
+		elif (_method == 'cd'):
 			dge_vec = chdir.chdir(join_df.iloc[:,:ctrl_df.shape[1]].as_matrix(), join_df.iloc[:,ctrl_df.shape[1]:].as_matrix(), 1).reshape((-1,))
 			pval_vec = 0.01 * np.ones_like(dge_vec, dtype='float16')
 		elif (_method.startswith('limma')):
@@ -756,13 +773,13 @@ BYTE_OF_FLOAT32, DIM_OF_SGN = 4, 2
 _task_size_1d = {'ji':lambda X: BYTE_OF_FLOAT32*(3*DIM_OF_SGN*X.shape[0]*X.shape[1]), 'wji':lambda X: BYTE_OF_FLOAT32*(6*DIM_OF_SGN*X.shape[0]*X.shape[1]), 'wsf':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*X.shape[0]*X.shape[1]), 'wkt':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*X.shape[0]*X.shape[1]+12*DIM_OF_SGN*X.shape[0]*sp.misc.comb(X.shape[1], 2))}
 _task_size_2d = {'ji':lambda X: BYTE_OF_FLOAT32*(3*DIM_OF_SGN*DIM_OF_SGN*X.shape[1]), 'wji':lambda X: BYTE_OF_FLOAT32*(6*DIM_OF_SGN*DIM_OF_SGN*X.shape[1]), 'wsf':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*DIM_OF_SGN*X.shape[1]), 'wkt':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*DIM_OF_SGN*X.shape[1]+12*DIM_OF_SGN*DIM_OF_SGN*sp.misc.comb(X.shape[1], 2))}
 
-def dge2simmt():
+def dge2simmt(**kw_args):
 	# from sklearn.externals.joblib import Parallel, delayed
 	from sklearn.metrics import pairwise
 	from sklearn.preprocessing import MultiLabelBinarizer
-	locs = opts.loc.split(SC)
-	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	kwargs = kw_args if len(kw_args) > 0 else ({} if opts.cfg is None else ast.literal_eval(opts.cfg))
 	if (type(kwargs) is str): kwargs = ast.literal_eval(kwargs)
+	locs = (kwargs['loc'] if (kwargs.has_key('loc')) else opts.loc).split(SC)
 	sim_method = kwargs.setdefault('sim_method', 'ji')
 	method = kwargs.setdefault('method', 'cd')
 	_method = method.lower()
@@ -774,7 +791,8 @@ def dge2simmt():
 	elif (input_exts[0] == '.npz'):
 		excel_dfs = [io.read_df(loc) for loc in locs]
 	dge_dir = kwargs.setdefault('dge_dir', os.path.join(gsc.GEO_PATH, 'dge'))
-	simmt_file = os.path.join(opts.cache if opts.output is None else opts.output, 'simmt.npz')
+	output_dir = kwargs['output'] if (kwargs.has_key('output')) else opts.output
+	simmt_file = os.path.join(opts.cache if output_dir is None else output_dir, 'simmt.npz')
 	idx_cols = kwargs.setdefault('idx_cols', 'disease_name;;drug_name;;gene_symbol').split(SC)
 	cache_f = os.path.join(opts.cache, 'udgene.pkl')
 	signed = True if (int(kwargs.setdefault('signed', 1)) == 1) else False
@@ -808,7 +826,8 @@ def dge2simmt():
 			for i in xrange(len(sgn_ids)):
 				dge_df = io.read_df(os.path.join(dge_path, 'dge_%i.npz' % i), with_idx=True)
 				if (hasattr(dge_df, 'pvalue')):
-					dge_df.drop(dge_df.index[np.where(dge_df['pvalue'] > (opts.thrshd if (type(opts.thrshd) is float) else 0.05))[0]], axis=0, inplace=True)
+					thrshd = kwargs.setdefault('thrshd', opts.thrshd)
+					dge_df.drop(dge_df.index[np.where(dge_df['pvalue'] > (thrshd if (type(thrshd) is float) else 0.05))[0]], axis=0, inplace=True)
 				else:
 					dge_df['pvalue'] = pd.Series(0.05 * np.ones(dge_df.shape[0]), index=dge_df.index)
 				udgene.append((set(dge_df.index[np.where(dge_df.iloc[:,0] > 0)[0]]), set(dge_df.index[np.where(dge_df.iloc[:,0] < 0)[0]])))
@@ -858,7 +877,7 @@ def dge2simmt():
 		if (opts.np > 1):
 			# Multi-processing method
 			# similarity = dstclc.parallel_pairwise(udgene_mt, None, _sim_method[sim_method], n_jobs=opts.np, min_chunksize=2)
-			similarity = _iter_2d_mltp(udgene_mt, udgene_mt, _sim_method[sim_method], signed=signed, ramsize=RAMSIZE, task_size_f=_task_size_2d[sim_method], n_jobs=opts.np, ipp_profile=opts.ipp, cache_path=opts.cache, **sim_kwargs)
+			similarity = _iter_2d_mltp(udgene_mt, udgene_mt, _sim_method[sim_method], signed=signed, ramsize=RAMSIZE, task_size_f=_task_size_2d[sim_method], n_jobs=opts.np, ipp_profile=kwargs.setdefault('ipp', opts.ipp), cache_path=opts.cache, **sim_kwargs)
 		else:
 			# Non-multi-processing method
 			similarity = _sim_method[sim_method](udgene_mt, udgene_mt, signed=signed, **sim_kwargs)
@@ -1518,7 +1537,7 @@ def plot_sampclt(with_cns=False):
 		plt.close()
 		
 		
-def plot_circos():
+def plot_circos(**kw_args):
 	import matplotlib as mpl
 	import matplotlib.pyplot as plt
 	import rpy2.robjects as ro
@@ -1528,13 +1547,14 @@ def plot_circos():
 	np2r.activate()
 	pd2r.activate()
 	ro.r('library(circlize)')
-	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	kwargs = kw_args if len(kw_args) > 0 else ({} if opts.cfg is None else ast.literal_eval(opts.cfg))
+	baseloc = kwargs.setdefault('loc', '.') if len(kw_args) > 0 else opts.loc
 	top_k = kwargs.setdefault('topk', 10)
 	top_i = kwargs.setdefault('topi', 1)
 	dizs_sgnfile, dizs_dgeloc = kwargs['dizs'].split(SC)
 	drug_sgnfile, drug_dgeloc = kwargs['drug'].split(SC)
 	gene_sgnfile, gene_dgeloc = kwargs['gene'].split(SC)
-	dizs_sgndf, drug_sgndf, gene_sgndf = pd.read_csv(os.path.join(opts.loc, dizs_sgnfile), index_col='id'), pd.read_csv(os.path.join(opts.loc, drug_sgnfile), index_col='id'), pd.read_csv(os.path.join(opts.loc, gene_sgnfile), index_col='id')
+	dizs_sgndf, drug_sgndf, gene_sgndf = pd.read_csv(os.path.join(baseloc, dizs_sgnfile), index_col='id'), pd.read_csv(os.path.join(baseloc, drug_sgnfile), index_col='id'), pd.read_csv(os.path.join(baseloc, gene_sgnfile), index_col='id')
 	subjtype_sgn_map = {'Disease':dizs_sgndf, 'Drug':drug_sgndf, 'Gene':gene_sgndf}
 	subjtype_col_map = {'Disease':'disease_name', 'Drug':'drug_name', 'Gene':'hs_gene_symbol'}
 	gsm_Xs, gsm_Ys, _ = gsc.get_mltl_npz(type='gsm', lbs=['0', '1', '2'], mltlx=False, spfmt=opts.spfmt)
@@ -1609,7 +1629,7 @@ def plot_circos():
 		# top_data.append(data.loc[idx].sort_values('dge_pval').head(top_k))
 	# Select the signatures in the case studies
 	slct_subj = ['Levetiracetam', 'Phenytoin', 'Estradiol', 'Genistein', 'melanoma', 'Lysophosphatidic acid', 'juvenile rheumatoid arthritis', 'melanoma in situ', 'prostate cancer', 'Celecoxib', 'Mehp', 'Perfluorooctanoic acid', 'Fluoxetine', 'Decitabine', "3,3',4,4'-tetrachlorobiphenyl", 'POR', 'Estradiol', 'Tretinoin', 'Cobalt dichloride hexahydrate', 'D-serine']
-	slct_subjtype = [data['subject_type'][np.where(data['subject']==x)[0][0]] for x in slct_subj] # subject type
+	slct_subjtype = [data['subject_type'].iloc[np.where(data['subject']==x)[0][0]] for x in slct_subj] # subject type
 	slct_idx = [i for i, x in enumerate(data['subject']) if x in slct_subj] # selected indices
 	subjtype_cnt = collections.Counter(slct_subjtype) # counter for each subject type
 	top_data = [data.iloc[slct_idx]]
@@ -1734,7 +1754,7 @@ def plot_circos():
 	simmt.index = data_with_idx.loc[simmt.index]['subject']
 	simmt.columns = data_with_idx.loc[simmt.columns]['subject']
 	# Remove the duplicate index
-	simmt.values[:,:] = np.abs(simmt.values)
+	simmt.values[:,:] = np.abs(simmt.values) # The reason of taking absolute values is that two subject may have both positive and negative relations. They might offset each other when merging.
 	simmt = func.unique_rowcol_df(simmt, merge='sum')
 	# Normalize the similarity matrix
 	simmt.values[:,:] = dstclc.normdist(simmt.values, range=[0.01,0.99])
@@ -1848,7 +1868,7 @@ def plot_circos():
 	ro.r('library(ComplexHeatmap)')
 	ro.r(r'''lgd_subjtype = Legend(at=c('Disease', 'Drug', 'Gene'), type='points', pch=15, size=unit(4,'mm'), legend_gp=gpar(col=c('blue','green','red')), title_position='topleft', title='Collection')''')
 	ro.r(r'''lgd_sample = Legend(at=c('Control', 'Perturbation'), type='points', pch=16, size=unit(3,'mm'), legend_gp=gpar(col=c('#FFBC22','#5519A1')), title_position='topleft', title='Sample')''')
-	ro.r(r'''lgd_celltype = Legend(at=unlist(lapply(unq_celltype, str_to_title)), nrow=NULL, ncol=5, type='points', pch=15, size=unit(2,'mm'), legend_gp=gpar(col=unlist(unq_celltype_col)), title_position='topleft', title='Crowdsourcing Tissue/Cell Annotation', labels_gp=gpar(fontsize=5), title_gp=gpar(fontsize=10, fontface='bold'), grid_height=unit(2,'mm'), grid_width=unit(2,'mm'), gap=unit(0.5,'mm'))''')
+	ro.r(r'''lgd_celltype = Legend(at=unlist(lapply(unq_celltype, str_to_title)), nrow=NULL, ncol=5, type='points', pch=15, size=unit(2,'mm'), legend_gp=gpar(col=unlist(unq_celltype_col)), title_position='topleft', title='Tissue/Cell Annotation', labels_gp=gpar(fontsize=5), title_gp=gpar(fontsize=10, fontface='bold'), grid_height=unit(2,'mm'), grid_width=unit(2,'mm'), gap=unit(0.5,'mm'))''')
 	ro.r(r'''lgd_orgnsm = Legend(at=unlist(unq_orgnsm), type='points', pch=15, size=unit(4,'mm'), legend_gp=gpar(col=unlist(unq_orgnsm_col)), title_position='topleft', title='Organism')''')
 	ro.r(r'''lgd_dgepval = Legend(at=c(0,1), col_fun=colorRamp2(unlist(dgepval_range), unlist(dgepval_colrange)), title_position='topleft', title='DGE P-value')''')
 	ro.r(r'''lgd_links = Legend(at=c(0.01,0.03,0.05), col_fun=col_fun, title_position='topleft', title='Association')''')
@@ -1883,6 +1903,8 @@ def main():
 		return
 	elif (opts.method == 'fuseki'):
 		fuseki()
+	elif (opts.method == 'n2y'):
+		npzs2yaml(opts.loc)
 	elif (opts.method == 'n2d'):
 		nt2db()
 	elif (opts.method == 'x2d'):
