@@ -1,0 +1,8 @@
+title: GESgnExt
+description: GEO Signature Extractor
+google_analytics: UA-106589583-3
+show_downloads: true
+theme: jekyll-theme-slate
+
+gems:
+  - jekyll-mentions
