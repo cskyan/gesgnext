@@ -10,6 +10,7 @@
 #
 
 import os
+import sys
 import re
 import sys
 import ast
@@ -99,7 +100,7 @@ def load_data(type='gse', pid=-1, fmt='npz', spfmt='csr'):
 	except Exception as e:
 		print e
 		print 'Can not find the data files!'
-		exit(1)
+		sys.exit(1)
 		
 		
 def get_gsm2gse(data_path):
@@ -737,7 +738,7 @@ def gen_sgn(**kwargs):
 		dge_dir = kwargs.setdefault('dge_dir', spdr.GEO_PATH if sgn_cfg['dge_dir'] is None else sgn_cfg['dge_dir'])
 	else:
 		print 'Configuration file is missing!'
-		exit(-1)
+		sys.exit(-1)
 	
 	## Load data for GSM and the association
 	Xs, Ys, labels, gsm2gse = load_data(type='sgn', pid=pid, fmt=opts.fmt, spfmt=opts.spfmt)
@@ -771,11 +772,13 @@ def gen_sgn(**kwargs):
 				platforms.append(pf_count[0][0] if len(pf_count) > 0 else '')
 				organisms.append(og_cout[0][0] if len(og_cout) > 0 else '')
 				tissues.append(ts_count[0][0] if len(ts_count) > 0 else '')
-			columns = ['Platforms', 'Organisms', 'Tissues']
+			columns = ['platform', 'organism', 'tissue']
 			preannot_df = pd.DataFrame.from_items([(k, v) for k, v in zip(columns, [platforms, organisms, tissues])], columns=columns)
 			preannot_df.index = pair_df.index
 			presgn_df = pd.concat([pair_df, preannot_df], axis=1, join_axes=[pair_df.index], copy=False)
+			# Set the index
 			presgn_df.index.name = 'id'
+			presgn_df.index = ['%s:%i' % (spdr.LABEL2ID[ds_lb], x) for x in range(presgn_df.shape[0])]
 			io.write_df(presgn_df, 'pre_sgn_%s.npz' % lbid, with_idx=True)
 			presgn_df.to_excel('pre_sgn_%s.xlsx' % lbid, encoding='utf8')
 			presgn_dfs.append(presgn_df)
@@ -789,25 +792,25 @@ def gen_sgn(**kwargs):
 		helper._sgn2ge(presgn_dfs[-1], sample_path, ge_path, format=format)
 		io.inst_print('Calculating the differential gene expression for dataset %i ...' % lbid)
 		dge_dfs = helper._sgn2dge(presgn_dfs[-1], method, ge_path, dge_path, dge_cache_path)
-		# Filter the pairs with low p-value
+		# Filter the pairs with high p-value
 		io.inst_print('Filtering the signatures for dataset %i according to the p-value of differential gene expression ...' % lbid)
-		pvalues = np.array([dge_df['pvalue'].min() for dge_df in dge_dfs])
+		pvalues = np.array([np.sort(dge_df['pvalue'].values)[:5].mean() for dge_df in dge_dfs])
 		selection = pvalues < (sgn_cfg['pval_thrshd'] if sgn_cfg.has_key('pval_thrshd') and sgn_cfg['pval_thrshd'] is not None else 0.05)
-		presgn_dfs[-1] = presgn_dfs[-1][selection]
-		orig_ids = np.arange(pvalues.shape[0])[selection]
-		orig_map = pd.DataFrame(orig_ids.reshape((-1,1)), index=presgn_dfs[-1].index, columns=['orig_idx'])
-		io.write_df(orig_map, 'orig_map.npz', with_idx=True)
-		# Set the index
-		presgn_dfs[-1].index = ['%s:%i' % (spdr.LABEL2ID[ds_lb], x) for x in range(presgn_dfs[-1].shape[0])]
-		for idx, orig_idx in enumerate(orig_ids):
-			dge_src = os.path.join(dge_path, 'dge_%i.npz' % orig_idx)
-			dge_dst = os.path.join(dge_filter_path, 'dge_%i.npz' % idx)
-			if (not os.path.exists(dge_dst)):
-				copyfile(dge_src, dge_dst)
-			dge_cache_src = os.path.join(dge_cache_path, _method, '%i.npz' % orig_idx)
-			dge_cache_dst = os.path.join(dge_cache_filter_path, _method, '%i.npz' % idx)
-			if (not os.path.exists(dge_cache_dst)):
-				copyfile(dge_cache_src, dge_cache_dst)
+		if (all(selection) == False):
+			presgn_dfs[-1] = presgn_dfs[-1][selection]
+			orig_ids = np.arange(pvalues.shape[0])[selection] # consistent with the index of original dge and the pre_sgn_x file
+			orig_map = pd.DataFrame(orig_ids.reshape((-1,1)), index=presgn_dfs[-1].index, columns=['orig_idx'])
+			io.write_df(orig_map, 'orig_map.npz', with_idx=True)
+			for idx, orig_idx in enumerate(orig_ids):
+				dge_src = os.path.join(dge_path, 'dge_%i.npz' % orig_idx)
+				dge_dst = os.path.join(dge_filter_path, 'dge_%i.npz' % idx)
+				if (not os.path.exists(dge_dst)):
+					copyfile(dge_src, dge_dst)
+				dge_cache_src = os.path.join(dge_cache_path, _method, '%i.npz' % orig_idx)
+				dge_cache_dst = os.path.join(dge_cache_filter_path, _method, '%i.npz' % idx)
+				if (not os.path.exists(dge_cache_dst)):
+					copyfile(dge_cache_src, dge_cache_dst)
+		# presgn_dfs[-1].index = ['%s:%i' % (spdr.LABEL2ID[ds_lb], x) for x in range(presgn_dfs[-1].shape[0])] # consistent with the index of filtered dge and the signature_x file
 	## Annotating Signatures
 	top_k = 3
 	cache_path = os.path.join(spdr.GEO_PATH, 'annot')
@@ -1391,7 +1394,7 @@ if __name__ == '__main__':
 	if len(args) > 0:
 		op.print_help()
 		op.error('Please input options instead of arguments.')
-		exit(1)
+		sys.exit(1)
 	# Option Correcting
 	if (opts.spfmt.lower() in ['', ' ', 'none']): opts.spfmt = None
 	# Logging setting

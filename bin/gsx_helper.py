@@ -14,6 +14,7 @@ import sys
 import ast
 import json
 import glob
+import psutil
 import logging
 import operator
 import itertools
@@ -27,7 +28,8 @@ from scipy import misc
 import pandas as pd
 import networkx as nx
 
-from bionlp.spider import annot, sparql
+from bioinfo.spider import nihnuccore
+from bionlp.spider import annot, sparql, nihgene
 from bionlp.util import fs, io, func, plot, ontology, shell, njobs, sampling
 from bionlp import dstclc, nlp, metric
 # from bionlp import txtclt
@@ -94,10 +96,10 @@ def xml2dbs():
 	
 	
 def dbcsv2nt():
-	excel_df = pd.read_csv(opts.loc, encoding='utf-8').fillna('')
+	data_df = pd.read_csv(opts.loc, encoding='utf-8').fillna('')
 	dbid_tmplt, name_tmplt = u'<http://www.drugbank.ca/drugbank-id/%s>', u'"%s"@en'
 	vcb_cmname, vcb_term = u'<http://www.drugbank.ca/vocab#common-name>', u'<http://www.drugbank.ca/vocab#term>'
-	dbids, cmnames, synm_strs = excel_df['DrugBank ID'].tolist(), excel_df['Common name'].tolist(), excel_df['Synonyms'].tolist()
+	dbids, cmnames, synm_strs = data_df['DrugBank ID'].tolist(), data_df['Common name'].tolist(), data_df['Synonyms'].tolist()
 	triples = [(dbid_tmplt % dbid, vcb_cmname, name_tmplt % cmname) for dbid, cmname in zip(dbids, cmnames)]
 	synonyms = [list(set([y.strip() for y in unicode(x).split('|')])) for x in synm_strs]
 	triples.extend([(dbid_tmplt % dbid, vcb_term, name_tmplt % synm.replace('"', '\\"')) for dbid, synms in zip(dbids, synonyms) for synm in synms if synm != u''])
@@ -107,10 +109,10 @@ def dbcsv2nt():
 	
 	
 def dgcsv2nt():
-	excel_df = pd.read_csv(opts.loc, encoding='utf-8').fillna('')
+	data_df = pd.read_csv(opts.loc, encoding='utf-8').fillna('')
 	gene_tmplt, intype_tmplt, drug_tmplt = u'<http://dgidb.genome.wustl.edu/gene/%s>', u'<http://dgidb.genome.wustl.edu/vocab#%s>', u'<http://dgidb.genome.wustl.edu/drug/%s>'
 	# vcb_interact = u'<http://dgidb.genome.wustl.edu/vocab#interact>'
-	gene_name, intype, drug_name = excel_df['entrez_gene_symbol'].tolist(), excel_df['interaction_types'].tolist(), excel_df['drug_primary_name'].tolist()
+	gene_name, intype, drug_name = data_df['entrez_gene_symbol'].tolist(), data_df['interaction_types'].tolist(), data_df['drug_primary_name'].tolist()
 	triples = [(gene_tmplt % gn.replace(' ', '_'), intype_tmplt % it.replace('n/a', 'unknown').replace(' ', '_'), drug_tmplt % dn.replace(' ', '_')) for gn, it, dn in zip(gene_name, intype, drug_name)]
 	triples = dict.fromkeys(triples).keys()
 	fpath = opts.output if opts.output is not None else os.path.splitext(opts.loc)[0] + '.nt'
@@ -118,7 +120,7 @@ def dgcsv2nt():
 
 
 def download():
-	excel_df = pd.read_csv(opts.loc)
+	sgn_df = pd.read_csv(opts.loc)
 	par_dir, basename = os.path.abspath(os.path.join(opts.loc, os.path.pardir)), os.path.splitext(os.path.basename(opts.loc))[0]
 	if (opts.unified):
 		saved_path = os.path.join(par_dir, opts.type) if opts.output is None else os.path.join(opts.output, opts.type)
@@ -127,16 +129,22 @@ def download():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	if (opts.type == 'soft'):
 		from bionlp.spider import geo
-		for geo_data in geo.fetch_geo(list(excel_df['geo_id']), saved_path=saved_path, skip_cached=True, **kwargs):
+		for geo_data in geo.fetch_geo(list(sgn_df['geo_id']), saved_path=saved_path, skip_cached=True, **kwargs):
 			del geo_data
 	else:
 		from bionlp.spider import geoxml as geo
-		geo_strs = list(geo.fetch_geo(list(excel_df['geo_id']), saved_path=saved_path, **kwargs))
+		# Download GSE data
+		geo_strs = list(geo.fetch_geo(list(sgn_df['geo_id']), saved_path=saved_path, **kwargs))
 		geo_strios = [cStringIO.StringIO(geo_str) for geo_str in geo_strs]
+		# Parse GSE data
 		geo_docs = geo.parse_geos(geo_strios)
+		# Download GSM data
 		samples = [sample for geo_doc in geo_docs for sample in geo_doc['samples']]
 		for sample_str in geo.fetch_geo(samples, saved_path=os.path.join(saved_path, 'samples'), **kwargs):
 			del sample_str
+		# Download GPL data
+		for gpl_str in geo.fetch_geo(list(sgn_df['platform']), saved_path=os.path.join(saved_path, 'platforms'), view='full', **kwargs):
+			del gpl_str
 
 def slct_featset():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
@@ -157,6 +165,93 @@ def gsm2gse():
 			gse_lbs[gsm_X.index.get_loc(sample)] = geo_id
 	y = pd.DataFrame(gse_lbs, index=gsm_X.index, columns=['gse_id'])
 	io.write_df(y, os.path.join(gsc.DATA_PATH, 'gsm2gse.npz'), with_idx=True)
+
+
+def _gpl2map(gpl_fpaths, fmt='xml'):
+	if (fmt == 'soft'):
+		from bionlp.spider import geo
+	else:
+		from bionlp.spider import geoxml as geo
+	# Pre-defined symbol column
+	probe_gene, symbol_kw = [], ['GENE SYMBOL', 'GENE_SYMBOL', 'GENESYMBOL', 'GENE NAME', 'GENE_NAME', 'GENENAME', 'SYMBOL']
+	for doc in geo.parse_geos(gpl_fpaths, view='full', type='gpl', fmt=fmt):
+		genes, empty = pd.Series([]), np.array([True]*doc['data'].shape[0])
+		# Map the gene id to symbol given in the dataset
+		for kw in symbol_kw:
+			if (not kw in doc['data'].columns): continue
+			if (genes.empty):
+				genes = doc['data'][kw]
+			else:
+				genes.loc[empty] = doc['data'][kw].loc[empty]
+			empty[empty] = [not x or str(x).isspace() for x in genes[empty]]
+		if (any(empty)):
+			# Some dataset has ambiguous column name
+			if ('GENE' in doc['data'].columns and any([kw in doc['col_desc'][doc['data'].columns.tolist().index('GENE') + 1].upper() for kw in ['GENE NAME', 'GENE SYMBOL']])):
+				if (genes.empty):
+					genes = doc['data']['GENE']
+				else:
+					genes.loc[empty] = doc['data']['GENE'].loc[empty]
+				empty[empty] = [not x or str(x).isspace() for x in genes[empty]]
+		# Query the NIH gene database to map the gene id to symbol
+		has_cols = dict([(col, col in doc['data'].columns # whether has this column
+				and any([kw in doc['col_desc'][doc['data'].columns.tolist().index(col) + 1].upper() for kw in ['ACCESSION', 'GENEBANK']]) # further confirm the content of this column
+				) for col in ['GB_LIST', 'GB_ACC']] # Gene Bank Accession Number
+			+ [('GENE', 'GENE' in doc['data'].columns and doc['col_desc'][doc['data'].columns.tolist().index('GENE') + 1].upper().startswith('ENTREZ GENE ID'))]) # ENTREZ GENE ID
+		if (any(empty) and (has_cols['GB_LIST'] or has_cols['GB_ACC'])): # first priority
+			col = 'GB_LIST' if has_cols['GB_LIST'] else 'GB_ACC'
+			gene_ids = doc['data'][col].apply(lambda x: str(x).strip(';,| ')).apply(lambda x: x.split(';') if x else []).apply(lambda x: func.flatten_list([dx.split(',') for dx in x if dx and not dx.isspace()])).apply(lambda x: func.flatten_list([dx.split('|') for dx in x if dx and not dx.isspace()])).apply(lambda x: func.flatten_list([dx.split(' ') for dx in x if dx and not dx.isspace()]))
+			print 'Converting the GenBank Accession Numbers %s of %s... into Gene Symbol...' % (','.join(func.flatten_list(gene_ids.iloc[empty][:5].tolist())), doc['id'])
+			# query_res = pd.Series([ for gene_doc in nihnuccore.parse_genes(nihnuccore.fetch_gene(gene_ids, ret_strio=True))], index=doc['data'].index)
+			query_res = []
+			for gene_doc in nihnuccore.parse_genes(nihnuccore.fetch_gene(gene_ids.tolist(), ret_strio=True)):
+				if (type(gene_doc) is list):
+					query_res.append(' /// '.join([gd['symbol'] for gd in gene_doc if gd.has_key('symbol') and gd['symbol']]))
+				else:
+					query_res.append(gene_doc['symbol'] if gene_doc.has_key('symbol') and gene_doc['symbol'] else '')
+			query_res = pd.Series(query_res, index=doc['data'].index)
+			if (genes.empty):
+				genes = query_res
+			else:
+				genes.loc[empty] = query_res.loc[empty]
+			empty[empty] = [not x or str(x).isspace() for x in genes[empty]]
+		if (any(empty) and has_cols['GENE']): # second priority
+			gene_ids = doc['data'][col].apply(lambda x: str(x).strip(';,| ')).apply(lambda x: x.split(';') if x else []).apply(lambda x: func.flatten_list([dx.split(',') for dx in x if dx and not dx.isspace()])).apply(lambda x: func.flatten_list([dx.split('|') for dx in x if dx and not dx.isspace()])).apply(lambda x: func.flatten_list([dx.split(' ') for dx in x if dx and not dx.isspace()]))
+			print 'Converting the Entrez GENE IDs %s of %s... into Gene Symbol...' % (','.join(func.flatten_list(gene_ids.iloc[empty][:5].tolist())), doc['id'])
+			# query_res = pd.Series([gene_doc['symbol'] if gene_doc.has_key('symbol') and gene_doc['symbol'] else '' for gene_doc in nihgene.parse_genes(nihgene.fetch_gene(gene_ids, ret_strio=True))], index=doc['data'].index)
+			query_res = []
+			for gene_doc in nihgene.parse_genes(nihgene.fetch_gene(gene_ids.tolist(), ret_strio=True)):
+				if (type(gene_doc) is list):
+					query_res.append(' /// '.join([gd['symbol'] for gd in gene_doc if gd.has_key('symbol') and gd['symbol']]))
+				else:
+					query_res.append(gene_doc['symbol'] if gene_doc.has_key('symbol') and gene_doc['symbol'] else '')
+			query_res = pd.Series(query_res, index=doc['data'].index)
+			if (genes.empty):
+				genes = query_res
+			else:
+				genes.loc[empty] = query_res.loc[empty]
+			empty[empty] = [not x or str(x).isspace() for x in genes[empty]]
+		# Cannot find the symbol column or the column is empty
+		if (genes.empty or ' '.join(map(str, genes.tolist())).isspace()): continue
+		probe_gene.append((doc['id'], genes))
+	return probe_gene
+
+	
+def gpl2map(fmt='xml'):
+	labels = gsc.LABEL2ID.keys()
+	if (opts.pid != -1):
+		labels = [labels[opts.pid % len(labels)]]
+	for label in labels:
+		# Read the corresponding platform metadata
+		platform_path = os.path.join(gsc.GEO_PATH, opts.type, label.replace(' ', '_'), 'platforms')
+		gpl_fpaths = [fpath for fpath in fs.listf(platform_path, pattern='GPL.*\.%s'%opts.type, full_path=True)]
+		if (opts.np == 1):
+			probe_gene = _gpl2map(gpl_fpaths, fmt=fmt)
+		else:
+			task_bnd = njobs.split_1d(len(gpl_fpaths), split_num=opts.np, ret_idx=True)
+			pgs = njobs.run_pool(_gpl2map, n_jobs=opts.np, dist_param=['gpl_fpaths'], gpl_fpaths=[gpl_fpaths[task_bnd[i]:task_bnd[i+1]] for i in range(opts.np)], fmt=fmt)
+			probe_gene = func.flatten_list(pgs)
+		probe_gene_map = dict(probe_gene)
+		io.write_obj(probe_gene_map, os.path.join(platform_path, 'probe_gene_map.pkl'))
 
 	
 def _cltpred2df(Xs, Ys, labels, lbids, predf_patn):
@@ -277,6 +372,28 @@ def _gsmclt_pair(X, Y, z, gsm2gse, lbid, thrshd=0.5, cache_path='.cache', fname=
 	geo_ids, ctrl_ids, pert_ids, tissues, organisms, platforms = [[] for x in range(6)]
 	for gse_id, cpclts in ctrl_pert_clts.iteritems():
 		# print gse_id, len(cpclts[0]), len(cpclts[1])
+		# Construct the GSM graph
+		# gsms = list(set(func.flatten_list(cpclts)))
+		# gsm_id_map = dict(zip(gsms, range(len(gsms))))
+		# gsm_X = X.loc[gsms]
+		# dist_mt = pdist(X, metric='euclidean', n_jobs=n_jobs)
+		# pw_dist, cnd_pw = [], []
+		# for ctrl, pert in itertools.product(cpclts[0], cpclts[1]):
+			# Filter the uninterpretable pairs
+			# ctrl_idx, pert_idx = [gsm_id_map[x] for x in ctrl], [gsm_id_map[x] for x in pert]
+			# Obtain the distance matrix of those GSMs
+			# pw_dist.append(dist_mt[ctrl_idx,:][:,pert_idx].mean())
+			# cnd_pw.append((ctrl, pert))
+		# Find a cut value for filtering
+		# hist, bin_edges = np.histogram(pw_dist)
+		# weird_val_idx = len(hist) - 1 - np.abs(hist[-1:0:-1] - hist[-2::-1]).argmax()
+		# cut_val = (bin_edges[weird_val_idx] + bin_edges[weird_val_idx + 1]) / 2
+		# for dist, pw in zip(pw_dist, cnd_pw):
+			# if (dist > cut_val): continue
+			# geo_ids.append(gse_id)
+			# ctrl, pert = pw
+			# ctrl_ids.append('|'.join(sorted(ctrl)))
+			# pert_ids.append('|'.join(sorted(pert)))
 		for ctrl, pert in itertools.product(cpclts[0], cpclts[1]):
 			geo_ids.append(gse_id)
 			ctrl_ids.append('|'.join(sorted(ctrl)))
@@ -350,17 +467,18 @@ def annot_sgn():
 	io.write_obj(annot_res_set[1], os.path.join(cache_path, 'gsm_annot.pkl'))
 
 	
-def _sgn2ge(excel_df, sample_path, saved_path, format='xml'):
-	if (format == 'soft'):
+def _sgn2ge(sgn_df, sample_path, saved_path, fmt='xml'):
+	if (fmt == 'soft'):
 		from bionlp.spider import geo
 	else:
 		from bionlp.spider import geoxml as geo
-	for i, (ctrl_str, pert_str) in enumerate(zip(excel_df['ctrl_ids'], excel_df['pert_ids'])):
-		ctrl_file, pert_file = os.path.join(saved_path, 'ctrl_%i.npz' % i), os.path.join(saved_path, 'pert_%i.npz' % i)
+	ids = sgn_df['id'] if hasattr(sgn_df, 'id') else sgn_df.index
+	for sid, ctrl_str, pert_str in zip(ids, sgn_df['ctrl_ids'], sgn_df['pert_ids']):
+		ctrl_file, pert_file = os.path.join(saved_path, 'ctrl_%s.npz' % sid), os.path.join(saved_path, 'pert_%s.npz' % sid)
 		if (os.path.exists(ctrl_file) and os.path.exists(pert_file)): continue
 		ctrl_ids, pert_ids = ctrl_str.split('|'), pert_str.split('|')
 		# Obtain the geo files for each sample
-		ctrl_geo_docs, pert_geo_docs = geo.parse_geos([os.path.join(sample_path, '.'.join([ctrl_id, format])) for ctrl_id in ctrl_ids], view='full', type='gsm', fmt=format), geo.parse_geos([os.path.join(sample_path, '.'.join([pert_id, format])) for pert_id in pert_ids], view='full', type='gsm', fmt=format)
+		ctrl_geo_docs, pert_geo_docs = geo.parse_geos([os.path.join(sample_path, '.'.join([ctrl_id, fmt])) for ctrl_id in ctrl_ids], view='full', type='gsm', fmt=fmt), geo.parse_geos([os.path.join(sample_path, '.'.join([pert_id, fmt])) for pert_id in pert_ids], view='full', type='gsm', fmt=fmt)
 		# Extract the gene expression data from the geo files for each sample, and combine the data within the same group
 		ctrl_ge_dfs, pert_ge_dfs = [geo_doc['data']['VALUE'] for geo_doc in ctrl_geo_docs], [geo_doc['data']['VALUE'] for geo_doc in pert_geo_docs]
 		ctrl_df, pert_df = pd.concat(ctrl_ge_dfs, axis=1, join='inner').astype('float32'), pd.concat(pert_ge_dfs, axis=1, join='inner').astype('float32')
@@ -371,34 +489,34 @@ def _sgn2ge(excel_df, sample_path, saved_path, format='xml'):
 def sgn2ge():
 	input_ext = os.path.splitext(opts.loc)[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
-		excel_df = pd.read_excel(opts.loc)
+		sgn_df = pd.read_excel(opts.loc)
 	elif (input_ext == '.csv'):
-		excel_df = pd.read_csv(opts.loc)
+		sgn_df = pd.read_csv(opts.loc)
 	elif (input_ext == '.npz'):
-		excel_df = io.read_df(opts.loc)
+		sgn_df = io.read_df(opts.loc)
 	par_dir, basename = os.path.abspath(os.path.join(opts.loc, os.path.pardir)), os.path.splitext(os.path.basename(opts.loc))[0]
 	sample_path = os.path.join(gsc.GEO_PATH, opts.type, basename, 'samples')
 	saved_path = os.path.join(par_dir, 'gedata', basename) if opts.output is None else os.path.join(opts.output, basename)
 	# Find the control group and perturbation group for every signature
-	_sgn2ge(excel_df, sample_path, saved_path, format=opts.type)
+	_sgn2ge(sgn_df, sample_path, saved_path, fmt=opts.type)
 
 
-def _sgn2dge(excel_df, method, ge_path, saved_path, cache_path):
+def _sgn2dge(sgn_df, method, ge_path, saved_path, cache_path):
 	from bioinfo.ext import chdir, limma
 	_method = method.lower()
-	ids = excel_df['id'] if hasattr(excel_df, 'id') else excel_df.index
+	ids = sgn_df['id'] if hasattr(sgn_df, 'id') else sgn_df.index
 	dge_dfs = []
-	for i, id in enumerate(ids):
-		dge_file = os.path.join(saved_path, 'dge_%i.npz' % i)
+	for sid in sids:
+		dge_file = os.path.join(saved_path, 'dge_%s.npz' % sid)
 		if (os.path.exists(dge_file)):
 			dge_df = io.read_df(dge_file, with_idx=True)
 			dge_dfs.append(dge_df)
 			continue
-		ctrl_file, pert_file = os.path.join(ge_path, 'ctrl_%i.npz' % i), os.path.join(ge_path, 'pert_%i.npz' % i)
+		ctrl_file, pert_file = os.path.join(ge_path, 'ctrl_%s.npz' % sid), os.path.join(ge_path, 'pert_%s.npz' % sid)
 		ctrl_df, pert_df = io.read_df(ctrl_file, with_col=False, with_idx=True), io.read_df(pert_file, with_col=False, with_idx=True)
 		# Find the gene sets that are both in control group and perturbation group
 		join_df = pd.concat([ctrl_df, pert_df], axis=1, join='inner')
-		print 'Start %s algorithm for No.%i %s...%s, %s, %s' % (method.upper(), i, id, ctrl_df.shape, pert_df.shape, join_df.shape)
+		print 'Start %s algorithm for %s...%s, %s, %s' % (method.upper(), sid, ctrl_df.shape, pert_df.shape, join_df.shape)
 		# Calculate the differential gene expression vector
 		if (ctrl_df.shape[0] == 0 or pert_df.shape[0] == 0):
 			dge_vec, pval_vec = [], []
@@ -418,9 +536,9 @@ def _sgn2dge(excel_df, method, ge_path, saved_path, cache_path):
 			elif (_method == 'limma-logodd'):
 				metric, adjust = 'B', None
 			if (adjust is None):
-				cachef = os.path.join(cache_path, 'limma', '%s.npz' % id)
+				cachef = os.path.join(cache_path, 'limma', '%s.npz' % sid)
 			else:
-				cachef = os.path.join(cache_path, 'limma-%s' % adjust, '%s.npz' % id)
+				cachef = os.path.join(cache_path, 'limma-%s' % adjust, '%s.npz' % sid)
 			cache, df = False, join_df
 			if (os.path.exists(cachef)):
 				df = io.read_df(cachef, with_idx=True)
@@ -430,7 +548,7 @@ def _sgn2dge(excel_df, method, ge_path, saved_path, cache_path):
 				io.write_df(dt, cachef, with_idx=True, compress=True)
 		else:
 			print '%s is not implemented!' % method.upper()
-			exit(1)
+			sys.exit(1)
 		dge_df = pd.DataFrame(np.stack((dge_vec, pval_vec), axis=-1), index=join_df.index, columns=['statistic', 'pvalue'], dtype='float16')
 		io.write_df(dge_df, dge_file, with_idx=True, compress=True)
 		dge_dfs.append(dge_df)
@@ -440,14 +558,14 @@ def _sgn2dge(excel_df, method, ge_path, saved_path, cache_path):
 def sgn2dge():
 	input_ext = os.path.splitext(opts.loc)[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
-		excel_df = pd.read_excel(opts.loc)
+		sgn_df = pd.read_excel(opts.loc)
 	elif (input_ext == '.csv'):
-		excel_df = pd.read_csv(opts.loc)
+		sgn_df = pd.read_csv(opts.loc)
 	elif (input_ext == '.npz'):
-		excel_df = io.read_df(opts.loc)
+		sgn_df = io.read_df(opts.loc)
 	else:
 		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
-		exit(1)
+		sys.exit(1)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	method = kwargs.setdefault('method', 'cd')
 	par_dir, basename = os.path.abspath(os.path.join(opts.loc, os.path.pardir)), os.path.splitext(os.path.basename(opts.loc))[0]
@@ -456,12 +574,16 @@ def sgn2dge():
 	cache_path = os.path.join(par_dir, 'dge', 'cache', basename) if opts.output is None else os.path.join(opts.output, 'cache', basename)
 	if (os.path.isdir(os.path.join(saved_path, 'filtered'))):
 		print 'Filtered data exists in save path: %s\nPlease move them to the original folder!' % saved_path
-		exit(-1)
+		sys.exit(-1)
 	elif (os.path.isdir(os.path.join(cache_path, 'filtered'))):
 		print 'Filtered data exists in cache path: %s\nPlease move them to the original folder!' % cache_path
-		exit(-1)
+		sys.exit(-1)
 	# Extract the control group and perturbation group of each gene expression signature
-	_sgn2dge(excel_df, method, ge_path, saved_path, cache_path)
+	if (opts.np == 1):
+		_sgn2dge(sgn_df, method, ge_path, saved_path, cache_path)
+	else:
+		task_bnd = njobs.split_1d(sgn_df.shape[0], split_num=opts.np, ret_idx=True)
+		_ = njobs.run_pool(_sgn2dge, n_jobs=opts.np, dist_param=['sgn_df'], sgn_df=[sgn_df.iloc[task_bnd[i]:task_bnd[i+1]] for i in range(opts.np)], method=method, ge_path=ge_path, saved_path=saved_path, cache_path=cache_path)
 	
 	
 def plot_dgepval():
@@ -483,7 +605,72 @@ def plot_dgepval():
 		label_col = np.repeat([label], data_col.shape[0])
 		data.append(np.stack([label_col, data_col]))
 	plot.plot_violin(data, xlabel='GEO Collection', ylabel='-log10(P-Value)', labels=group_labels, groups=groups, ref_lines={'y':[-np.log10(0.05)]}, plot_cfg=plot_common_cfg, log=-1, sns_inner='box', sns_bw=.3)
+
+
+def _dge2udrg(sgn_dge_fpaths, sgn_df, probe_gene_map, keep_unkown_probe=False, hist_bnd=(-2, 1)):
+    udr_genes = []
+    for sgn_dge_fpath in sgn_dge_fpaths:
+        sgn_dge = io.read_df(sgn_dge_fpath, with_idx=True)
+        if (np.all(pd.isnull(sgn_dge))): continue
+        # Filter out the probes that cannot be converted to gene symbols
+        plfm = sgn_df['platform'].loc[sgn_dge.index[0]]
+        has_plfm = probe_gene_map.has_key(plfm) and not probe_gene_map[plfm].empty
+        if (has_plfm and not keep_unkown_probe):
+            pgmap = probe_gene_map[plfm]
+            columns = [col for col in sgn_dge.columns if col in pgmap.index and pgmap.loc[col] and not pgmap.loc[col].isspace()]
+            sgn_dge = sgn_dge[columns]
+        
+        hist, bin_edges = zip(*[np.histogram(sgn_dge.iloc[i]) for i in range(sgn_dge.shape[0])])
+        uprg = [sgn_dge.iloc[i, np.where(sgn_dge.iloc[i] >= bin_edges[i][hist_bnd[0]])[0]].sort_values(ascending=False) for i in range(sgn_dge.shape[0])]
+        dwrg = [sgn_dge.iloc[i, np.where(sgn_dge.iloc[i] <= bin_edges[i][hist_bnd[1]])[0]].sort_values(ascending=True) for i in range(sgn_dge.shape[0])]
+        upr_genes, dwr_genes = [x.index.tolist() for x in uprg], [x.index.tolist() for x in dwrg]
+        upr_dges, dwr_dges = [x.tolist() for x in uprg], [x.tolist() for x in dwrg]
+
+        # Map to Gene Symbol
+        if (has_plfm):
+            pgmap = probe_gene_map[plfm]
+            upr_genes = [[[x.strip() for x in pgmap.loc[probe].split('///')] if (probe in pgmap.index) else [probe] for probe in probes] for probes in upr_genes]
+            uprg_lens = [[len(x) for x in genes] for genes in upr_genes]
+            upr_dges = [[[dge] * length for dge, length in zip(dges, lens)] for dges, lens in zip(upr_dges, uprg_lens)]
+            upr_genes = [func.flatten_list(probes) for probes in upr_genes]
+            upr_dges = [func.flatten_list(dges) for dges in upr_dges]
+            dwr_genes = [[[x.strip() for x in pgmap.loc[probe].split('///')] if (probe in pgmap.index) else [probe] for probe in probes] for probes in dwr_genes]
+            dwrg_lens = [[len(x) for x in genes] for genes in dwr_genes]
+            dwr_dges = [[[dge] * length for dge, length in zip(dges, lens)] for dges, lens in zip(dwr_dges, dwrg_lens)]
+            dwr_genes = [func.flatten_list(probes) for probes in dwr_genes]
+            dwr_dges = [func.flatten_list(dges) for dges in dwr_dges]
+        udr_genes.append(pd.DataFrame(OrderedDict([('Up-regulated Genes', ['|'.join(map(str, x)) for x in upr_genes]), ('Down-regulated Genes', ['|'.join(map(str, x)) for x in dwr_genes]), ('Up-regulated DGEs', ['|'.join(map(str, x)) for x in upr_dges]), ('Down-regulated DGEs', ['|'.join(map(str, x)) for x in dwr_dges])]), index=sgn_dge.index))
+    return pd.concat(udr_genes, axis=0, join='inner')
+		
+
+def dge2udrg():
+	input_ext = os.path.splitext(opts.loc)[1]
+	if (input_ext == '.xlsx' or input_ext == '.xls'):
+		sgn_df = pd.read_excel(opts.loc)
+	elif (input_ext == '.csv'):
+		sgn_df = pd.read_csv(opts.loc)
+	elif (input_ext == '.npz'):
+		sgn_df = io.read_df(opts.loc)
+	else:
+		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
+		sys.exit(1)
+	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	dge_dir = kwargs['dge_dir']
+	pgmap_dir = kwargs['pgmap_dir']
+	keep_unkown_probe = kwargs.setdefault('kup', False)
+	hist_bnd = kwargs.setdefault('hist_bnd', (-2, 1))
+	idx_sgn_df = sgn_df.set_index('id')
+	probe_gene_map = io.read_obj(os.path.join(pgmap_dir, 'probe_gene_map.pkl'))
+	sgn_dge_fpaths = fs.listf(dge_dir, pattern='dge_X_.*\.npz', full_path=True)
 	
+	task_bnd = njobs.split_1d(len(sgn_dge_fpaths), split_num=opts.np, ret_idx=True)
+	udr_genes = njobs.run_pool(_dge2udrg, n_jobs=opts.np, dist_param=['sgn_dge_fpaths'], sgn_dge_fpaths=[sgn_dge_fpaths[task_bnd[i]:task_bnd[i+1]] for i in range(opts.np)], sgn_df=idx_sgn_df, probe_gene_map=probe_gene_map, keep_unkown_probe=keep_unkown_probe)
+	new_sgn_df = pd.concat([idx_sgn_df, pd.concat(udr_genes, axis=0, join='inner')], axis=1, join_axes=[idx_sgn_df.index])
+	new_sgn_fpath = '%s_udrg' % os.path.splitext(opts.loc)[0]
+	new_sgn_fpath = os.path.join(opts.output, os.path.basename(new_sgn_fpath)) if os.path.exists(opts.output) else new_sgn_fpath
+	io.write_df(new_sgn_df, new_sgn_fpath, with_idx=True)
+	new_sgn_df.to_excel(new_sgn_fpath, encoding='utf8')
+
 
 # Binary Jaccard index
 def _ji(a, b):
@@ -785,11 +972,11 @@ def dge2simmt(**kw_args):
 	_method = method.lower()
 	basenames, input_exts = zip(*[os.path.splitext(os.path.basename(loc)) for loc in locs])
 	if (input_exts[0] == '.xlsx'):
-		excel_dfs = [pd.read_excel(loc) for loc in locs]
+		sgn_dfs = [pd.read_excel(loc) for loc in locs]
 	elif (input_exts[0] == '.csv'):
-		excel_dfs = [pd.read_csv(loc) for loc in locs]
+		sgn_dfs = [pd.read_csv(loc) for loc in locs]
 	elif (input_exts[0] == '.npz'):
-		excel_dfs = [io.read_df(loc) for loc in locs]
+		sgn_dfs = [io.read_df(loc) for loc in locs]
 	dge_dir = kwargs.setdefault('dge_dir', os.path.join(gsc.GEO_PATH, 'dge'))
 	output_dir = kwargs['output'] if (kwargs.has_key('output')) else opts.output
 	simmt_file = os.path.join(opts.cache if output_dir is None else output_dir, 'simmt.npz')
@@ -814,13 +1001,13 @@ def dge2simmt(**kw_args):
 		io.inst_print('Preparing data...')
 		ids, id_bndry, udgene, pvaldict = [[] for i in range(4)]
 		# Read all the differentially expressed genes vector of each collection
-		for basename, excel_df, idx_col in zip(basenames, excel_dfs, idx_cols):
+		for basename, sgn_df, idx_col in zip(basenames, sgn_dfs, idx_cols):
 			dge_path = os.path.join(dge_dir, _method, basename)
 			if (os.path.isdir(os.path.join(dge_path, 'filtered'))):
 				print 'Filtered data exists in dge path: %s\nPlease move them to the original folder!' % dge_path
 				exists(-1)
-			sgn_ids = excel_df['id'].tolist()
-			# sgn_ids = excel_df[idx_col].tolist() # customized identity for each signature
+			sgn_ids = sgn_df['id'].tolist()
+			# sgn_ids = sgn_df[idx_col].tolist() # customized identity for each signature
 			ids.extend(sgn_ids)
 			id_bndry.append(len(sgn_ids)) # append number of signatures to form the boundaries
 			for i in xrange(len(sgn_ids)):
@@ -890,7 +1077,7 @@ def dge2simmt(**kw_args):
 		io.write_df(simmt, simmt_file, with_idx=True, sparse_fmt=opts.spfmt, compress=True)
 	# Calculate the similarity matrix within each collection
 	io.inst_print('Splitting the similarity matrix...')
-	for k in xrange(len(excel_dfs)):
+	for k in xrange(len(sgn_dfs)):
 		idx_pair = (id_bndry[k], id_bndry[k + 1])
 		sub_simmt = simmt.iloc[idx_pair[0]:idx_pair[1],idx_pair[0]:idx_pair[1]]
 		fpath = os.path.splitext(simmt_file)
@@ -913,24 +1100,24 @@ def onto2simmt():
 		return set(new_list)
 	input_ext = os.path.splitext(opts.loc)[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
-		excel_df = pd.read_excel(opts.loc)
+		sgn_df = pd.read_excel(opts.loc)
 	elif (input_ext == '.csv'):
-		excel_df = pd.read_csv(opts.loc)
+		sgn_df = pd.read_csv(opts.loc)
 	elif (input_ext == '.npz'):
-		excel_df = io.read_df(opts.loc)
+		sgn_df = io.read_df(opts.loc)
 	else:
 		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
-		exit(1)
+		sys.exit(1)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	col_name, db_name, closure_kwargs = kwargs['col_name'], kwargs['db_name'], dict([('max_length', kwargs.setdefault('max_length', 3))])
 	noid, lang = gsc.DB2ATTR[db_name]['noid'], gsc.DB2LANG[db_name]
 	ontog = sparql.SPARQL('http://localhost:8890/%s/query' % db_name, use_cache=common_cfg.setdefault('memcache', False), timeout=opts.timeout)
 	fn_func = ontology.define_fn(ontog, type='exact', has_id=not noid, lang=lang, prdns=[(k, getattr(ontology, v)) for k, v in gsc.DB2INTPRDS[db_name]], eqprds={})
-	distmt, vname = ontology.transitive_closure_dsg(ontog, excel_df[col_name].tolist(), find_neighbors=fn_func, filter=filter, **closure_kwargs)
+	distmt, vname = ontology.transitive_closure_dsg(ontog, sgn_df[col_name].tolist(), find_neighbors=fn_func, filter=filter, **closure_kwargs)
 	if (distmt.shape[1] == 0):
 		print 'Could not find any neighbors using exact matching. Using fuzzy matching instead...'
 		fn_func = ontology.define_fn(ontog, type='fuzzy', has_id=not noid, lang=lang, prdns=[(k, getattr(ontology, v)) for k, v in gsc.DB2INTPRDS[db_name]], eqprds={})
-		distmt, vname = ontology.transitive_closure_dsg(ontog, excel_df[col_name].tolist(), find_neighbors=fn_func, filter=filter, **closure_kwargs)
+		distmt, vname = ontology.transitive_closure_dsg(ontog, sgn_df[col_name].tolist(), find_neighbors=fn_func, filter=filter, **closure_kwargs)
 	simmt = coo_matrix((1-dstclc.normdist(distmt.data.astype('float32')), (distmt.row, distmt.col)), shape=distmt.shape)
 	simmt.setdiag(1)
 	sim_df = pd.DataFrame(simmt.toarray(), index=vname, columns=vname)
@@ -944,19 +1131,19 @@ def onto22simmt():
 	fnames = kwargs['fnames'].split(SC)
 	input_ext = os.path.splitext(fnames[0])[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
-		excel_dfs = [pd.read_excel(os.path.join(opts.loc, fname)) for fname in fnames]
+		sgn_dfs = [pd.read_excel(os.path.join(opts.loc, fname)) for fname in fnames]
 	elif (input_ext == '.csv'):
-		excel_dfs = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in fnames]
+		sgn_dfs = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in fnames]
 	elif (input_ext == '.npz'):
-		excel_dfs = [io.read_df(os.path.join(opts.loc, fname)) for fname in fnames]
+		sgn_dfs = [io.read_df(os.path.join(opts.loc, fname)) for fname in fnames]
 	else:
 		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
-		exit(1)
+		sys.exit(1)
 	col_names, db_name, closure_kwargs = kwargs['col_names'].split(SC), kwargs['db_name'], dict([('max_length', kwargs.setdefault('max_length', 3))])
 	# Make sure that the column name in the dataframe contains the keywords of the identifier name space
 	idnss = [[(idns[0], getattr(ontology, idns[1])) for k, v in gsc.DB2IDNS[db_name].iteritems() if k in col_name for idns in v ][0] for col_name in col_names]
 	noid, lang, filt_func, clean_func = gsc.DB2ATTR[db_name]['noid'], gsc.DB2LANG[db_name], ontology.filter_result(db_name), ontology.clean_result(db_name)
-	full_items = [['%s%s'%(idns[1],ontology.replace_invalid_sparql_str(item)) for item in df[col_name]] for df, col_name, idns in zip(excel_dfs, col_names, idnss)] if noid else [df[col_name].tolist() for df, col_name in zip(excel_dfs, col_names)]
+	full_items = [['%s%s'%(idns[1],ontology.replace_invalid_sparql_str(item)) for item in df[col_name]] for df, col_name, idns in zip(sgn_dfs, col_names, idnss)] if noid else [df[col_name].tolist() for df, col_name in zip(sgn_dfs, col_names)]
 	ontog = sparql.SPARQL('http://localhost:8890/%s/query' % db_name, use_cache=common_cfg.setdefault('memcache', False), timeout=opts.timeout)
 	fn_func = ontology.define_fn(ontog, type='exact', has_id=not noid, lang=lang, idns=idnss, prdns=[(k, getattr(ontology, v)) for k, v in gsc.DB2INTPRDS[db_name]], eqprds={})
 	distmt, vname = ontology.transitive_closure_dsg(ontog, full_items[0]+full_items[1], find_neighbors=fn_func, filter=filt_func, cleaner=clean_func, **closure_kwargs)
@@ -998,15 +1185,15 @@ def ddi2simmt():
 	intr_cache_path = os.path.join(gsc.RXNAV_PATH, 'interaction')
 	input_ext = os.path.splitext(opts.loc)[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
-		excel_df = pd.read_excel(opts.loc)
+		sgn_df = pd.read_excel(opts.loc)
 	elif (input_ext == '.csv'):
-		excel_df = pd.read_csv(opts.loc)
+		sgn_df = pd.read_csv(opts.loc)
 	elif (input_ext == '.npz'):
-		excel_df = io.read_df(opts.loc)
+		sgn_df = io.read_df(opts.loc)
 	else:
 		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
-		exit(1)
-	drug_list = excel_df[col_name].tolist()
+		sys.exit(1)
+	drug_list = sgn_df[col_name].tolist()
 	if (os.path.exists(cache_path)):
 		interactions = io.read_obj(cache_path)
 	else:
@@ -1106,15 +1293,15 @@ def ppi2simmt():
 	intr_cache_path = os.path.join(gsc.BIOGRID_PATH, 'interaction')
 	input_ext = os.path.splitext(opts.loc)[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
-		excel_df = pd.read_excel(opts.loc)
+		sgn_df = pd.read_excel(opts.loc)
 	elif (input_ext == '.csv'):
-		excel_df = pd.read_csv(opts.loc)
+		sgn_df = pd.read_csv(opts.loc)
 	elif (input_ext == '.npz'):
-		excel_df = io.read_df(opts.loc)
+		sgn_df = io.read_df(opts.loc)
 	else:
 		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
-		exit(1)
-	gene_list = excel_df[col_name].tolist()
+		sys.exit(1)
+	gene_list = sgn_df[col_name].tolist()
 	if (os.path.exists(cache_path[0])):
 		interactions = io.read_obj(cache_path[0])
 		if (os.path.exists(cache_path[1])):
@@ -1206,10 +1393,10 @@ def sgn_overlap():
 
 def sgn_eval():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
-	excel_df, true_simmt = pd.read_csv(kwargs['sgn']), io.read_df(kwargs['truesim'], with_idx=True, sparse_fmt=opts.spfmt)
+	sgn_df, true_simmt = pd.read_csv(kwargs['sgn']), io.read_df(kwargs['truesim'], with_idx=True, sparse_fmt=opts.spfmt)
 	col_name, sgn_simdfs, sgnsim_lbs, truesim_lb = kwargs['col_name'], kwargs['sgnsims'].split(SC), kwargs['sgnsim_lbs'].split(SC), kwargs['truesim_lb']
 	# Only compare the overlap symbols
-	sgn_symbols, gt_symbols = [str(x).lower() for x in excel_df[col_name]], [str(x).lower() for x in true_simmt.index]
+	sgn_symbols, gt_symbols = [str(x).lower() for x in sgn_df[col_name]], [str(x).lower() for x in true_simmt.index]
 	true_simmt.index, true_simmt.columns = gt_symbols, gt_symbols
 	true_simmt = func.unique_rowcol_df(true_simmt, merge='sum')
 	true_simmt[true_simmt >= 0.5] = 1
@@ -1227,7 +1414,7 @@ def sgn_eval():
 		id_map = dict(zip(sgn_simdf.index, range(sgn_simdf.shape[0])))
 		# Find out the unique symbol and their signatures
 		unique_idx = {}
-		for id, symbol in zip(excel_df['id'], excel_df[col_name]):
+		for id, symbol in zip(sgn_df['id'], sgn_df[col_name]):
 			unique_idx.setdefault(str(symbol).lower(), []).append(id_map[id])
 		for k, v in unique_idx.iteritems():
 			unique_idx[k] = np.array(v)
@@ -1252,10 +1439,10 @@ def sgn_eval():
 	
 def cross_sgn_eval():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
-	excel_dfs, true_simmt = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], io.read_spdf(kwargs['truesim'], with_idx=True, sparse_fmt=opts.spfmt)
+	sgn_dfs, true_simmt = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], io.read_spdf(kwargs['truesim'], with_idx=True, sparse_fmt=opts.spfmt)
 	col_names, sgn_simdfs, sgnsim_lbs, truesim_lb = kwargs['col_names'].split(SC), kwargs['sgnsims'].split(SC), kwargs['sgnsim_lbs'].split(SC), kwargs['truesim_lb']
 	# Only compare the overlap symbols
-	sgn_symbols, gt_symbols = [[unicode(x).lower() for x in excel_df[col_name]] for excel_df, col_name in zip(excel_dfs, col_names)], [[unicode(x).lower() for x in symbs] for symbs in [true_simmt['index'], true_simmt['columns']]]
+	sgn_symbols, gt_symbols = [[unicode(x).lower() for x in sgn_df[col_name]] for sgn_df, col_name in zip(sgn_dfs, col_names)], [[unicode(x).lower() for x in symbs] for symbs in [true_simmt['index'], true_simmt['columns']]]
 	true_simmt['index'], true_simmt['columns'] = gt_symbols[0], gt_symbols[1]
 	true_simmt['values'], true_simmt['shape'], true_simmt['index'], true_simmt['columns'] = func.unique_rowcol(sp.sparse.lil_matrix(true_simmt['values']), true_simmt['index'], true_simmt['columns'], merge='sum')
 	true_simmt['values'] = sp.sparse.csr_matrix(true_simmt['values'])
@@ -1274,8 +1461,8 @@ def cross_sgn_eval():
 		id_map = dict(zip(sgn_simdf.index, range(sgn_simdf.shape[0])))
 		# Find out the unique symbol and their signatures
 		unique_idx = {}
-		for excel_df, col_name in zip(excel_dfs, col_names):
-			for id, symbol in zip(excel_df['id'], excel_df[col_name]):
+		for sgn_df, col_name in zip(sgn_dfs, col_names):
+			for id, symbol in zip(sgn_df['id'], sgn_df[col_name]):
 				unique_idx.setdefault(unicode(symbol).lower(), []).append(id_map[id])
 		for k, v in unique_idx.iteritems():
 			unique_idx[k] = np.array(v)
@@ -1316,11 +1503,11 @@ def cmp2sim():
 def cmp_sim_list():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	excel_path, col_name, db_name, sim_lb, rankl_lb = kwargs['excel_path'], kwargs['col_name'], kwargs['db_name'], kwargs['sim_lb'], kwargs['rankl_lb']
-	excel_df, sim_df, rank_list = pd.read_csv(excel_path), io.read_df(os.path.join(opts.loc, kwargs['sim']), with_idx=True, sparse_fmt=opts.spfmt), io.read_obj(os.path.join(opts.loc, kwargs['rankl']))
-	overlaps = set([str(x).lower() for x in sim_df.index]) & set([str(x).lower() for x in excel_df[col_name]])
+	sgn_df, sim_df, rank_list = pd.read_csv(excel_path), io.read_df(os.path.join(opts.loc, kwargs['sim']), with_idx=True, sparse_fmt=opts.spfmt), io.read_obj(os.path.join(opts.loc, kwargs['rankl']))
+	overlaps = set([str(x).lower() for x in sim_df.index]) & set([str(x).lower() for x in sgn_df[col_name]])
 	y_true, y_pred = [], []
 	for ol in overlaps:
-		rankls = [rank_list[x] for x in np.where(excel_df[col_name] == ol)[0] if len(rank_list[x]) > 0]
+		rankls = [rank_list[x] for x in np.where(sgn_df[col_name] == ol)[0] if len(rank_list[x]) > 0]
 		if (not rankls): continue
 		max_length = max([len(x) for x in rankls])
 		rankl = [collections.Counter([x[l] for x in rankls if len(x) > l]).most_common(1)[0][0] for l in range(max_length)]
@@ -1335,9 +1522,9 @@ def cmp_sim_list():
 def simmt2gml():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	simmt = io.read_spdf(kwargs['simmt'], with_idx=True, sparse_fmt=opts.spfmt)
-	excel_dfs, col_names = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], kwargs['col_names'].split(SC)
-	id2gse = dict(reduce(operator.add, [list(zip(df['id'], df['geo_id'])) for df in excel_dfs]))
-	id2subj = dict(reduce(operator.add, [list(zip(df['id'], df[col])) for df, col in zip(excel_dfs, col_names)]))
+	sgn_dfs, col_names = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], kwargs['col_names'].split(SC)
+	id2gse = dict(reduce(operator.add, [list(zip(df['id'], df['geo_id'])) for df in sgn_dfs]))
+	id2subj = dict(reduce(operator.add, [list(zip(df['id'], df[col])) for df, col in zip(sgn_dfs, col_names)]))
 	gse_Y = io.read_df(os.path.join(gsc.DATA_PATH, 'gse_Y.npz'), with_idx=True)
 	G = nx.Graph()
 	G.add_nodes_from([(idx,dict(subj='' if id2subj[idx] is np.nan else id2subj[idx], subj_type=np.where(gse_Y.loc[id2gse[idx]]==1)[0][0].item())) for idx in simmt['index']])
@@ -1405,8 +1592,13 @@ def plot_simmt_hrc():
 	sys.setrecursionlimit(10000)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	simmt = io.read_spdf(kwargs['simmt'], with_idx=True, sparse_fmt=opts.spfmt)
-	excel_dfs, col_names = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], kwargs['col_names'].split(SC)
-	id2subj = dict(reduce(operator.add, [list(zip(df['id'], df[col])) for df, col in zip(excel_dfs, col_names)]))
+	sgn_dfs, col_names = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], kwargs['col_names'].split(SC)
+	valid_idx = [i for i, idx in enumerate(simmt['index']) if idx in func.flatten_list([df['id'] for df in sgn_dfs])]
+	simmt['index'] = simmt['index'][valid_idx]
+	simmt['columns'] = simmt['columns'][valid_idx]
+	simmt['values'] = simmt['values'][valid_idx,:][:,valid_idx]
+	simmt['shape'] = simmt['values'].shape
+	id2subj = dict(reduce(operator.add, [list(zip(df['id'], df[col])) for df, col in zip(sgn_dfs, col_names)]))
 	axis_label = ['' if id2subj[idx] is np.nan else id2subj[idx] for idx in simmt['index']]
 	simmt_values = np.nan_to_num(simmt['values'].toarray())
 	# border = max(abs(simmt_values.min()), abs(simmt_values.max()))
@@ -1492,8 +1684,8 @@ def plot_sampclt(with_cns=False):
 		## Calculate the distance
 		D = dstclc.cns_dist(X.as_matrix(), C=constraint, metric=metric, a=a, n_jobs=opts.np)
 		## Construct a KNN graph
-		KNNG = kneighbors_graph(D, 4, mode='distance', metric='precomputed', n_jobs=opts.np).tocoo()
-		# KNNG = radius_neighbors_graph(D, 0.5, mode='distance', metric='precomputed', n_jobs=opts.np).tocoo()
+		# KNNG = kneighbors_graph(D, 4, mode='distance', metric='precomputed', n_jobs=opts.np).tocoo()
+		KNNG = radius_neighbors_graph(D, 0.5, mode='distance', metric='precomputed', n_jobs=opts.np).tocoo()
 		## Construct the graph
 		G = nx.Graph()
 		G.add_nodes_from([(idx, dict(id=vid)) for idx, vid in enumerate(vertices)])
@@ -1528,7 +1720,7 @@ def plot_sampclt(with_cns=False):
 		# nx.draw_networkx_edges(G, pos, edgelist=esmall, width=1, alpha=0.5, edge_color='grey', style='dashed')
 		# nx.draw_networkx_edge_labels(G, pos, edge_labels=dict([(e, '%.3f' % G.edge[e[0]][e[1]]['weight']) for e in elarge]), bbox=dict(boxstyle='round,pad=0.,rounding_size=0.2', fc='w', ec='w', alpha=1))
 		nx.draw_networkx_edges(G, pos, edgelist=edges, width=2, alpha=0.7)
-		nx.draw_networkx_edge_labels(G, pos, edge_labels=dict([(e, '%.3f' % G.edge[e[0]][e[1]]['weight']) for e in edges]), bbox=dict(boxstyle='round,pad=0.,rounding_size=0.2', fc='w', ec='w', alpha=1))
+		nx.draw_networkx_edge_labels(G, pos, edge_labels=dict([(e, '%.3f' % G.edge[e[0]][e[1]]['weight']) for e in edges]), bbox=dict(boxstyle='round,pad=0.,rounding_size=0.2', fc='w', ec='w', alpha=1), font_size='6')
 		plt.axis('off')
 		if (plot.MON):
 			plt.show()
@@ -1570,8 +1762,8 @@ def plot_circos(**kw_args):
 	else:
 		sgn_dfs = []
 		for subjtype, sgndf in subjtype_sgn_map.iteritems():
-			df = sgndf[['ctrl_ids', 'pert_ids', 'geo_id', 'Organisms', 'cell_type', 'Platforms', subjtype_col_map[subjtype]]]
-			df.rename(columns={'Organisms': 'organisms', subjtype_col_map[subjtype]: 'subject'}, inplace=True)
+			df = sgndf[['ctrl_ids', 'pert_ids', 'geo_id', 'prganism', 'cell_type', 'platform', subjtype_col_map[subjtype]]]
+			df.rename(columns={'Organism': 'organism', subjtype_col_map[subjtype]: 'subject'}, inplace=True)
 			df['subject_type'] = [subjtype] * df.shape[0]
 			sgn_dfs.append(df)
 		data = pd.concat(sgn_dfs).reset_index()
@@ -1588,7 +1780,8 @@ def plot_circos(**kw_args):
 		subjtype_dgeloc_map = {'Disease':dizs_dgeloc, 'Drug':drug_dgeloc, 'Gene':gene_dgeloc}
 		dge_vals, dge_pvals = [], []
 		for idx, row in data.iterrows():
-			dge_fname = 'dge_%i.npz' % subjtype_sgnidx_map[row['subject_type']].loc[row['id']]
+			# dge_fname = 'dge_%i.npz' % subjtype_sgnidx_map[row['subject_type']].loc[row['id']]
+			dge_fname = 'dge_%i.npz' % row['id']
 			df = io.read_df(os.path.join(subjtype_dgeloc_map[row['subject_type']], dge_fname), with_idx=True).replace([np.inf, -np.inf], np.nan).dropna()
 			dge_abs = np.abs(df['statistic']).astype('float32')
 			# df = df[dge_abs > dge_abs.mean()]
@@ -1628,7 +1821,7 @@ def plot_circos(**kw_args):
 	# for k, idx in data.groupby('subject_type').groups.iteritems():
 		# top_data.append(data.loc[idx].sort_values('dge_pval').head(top_k))
 	# Select the signatures in the case studies
-	slct_subj = ['Levetiracetam', 'Phenytoin', 'Estradiol', 'Genistein', 'melanoma', 'Lysophosphatidic acid', 'juvenile rheumatoid arthritis', 'melanoma in situ', 'prostate cancer', 'Celecoxib', 'Mehp', 'Perfluorooctanoic acid', 'Fluoxetine', 'Decitabine', "3,3',4,4'-tetrachlorobiphenyl", 'POR', 'Estradiol', 'Tretinoin', 'Cobalt dichloride hexahydrate', 'D-serine']
+	slct_subj = ['Levetiracetam', 'Phenytoin', 'Estradiol', 'Genistein', 'anemia', 'Lysophosphatidic acid', 'hypertension', 'melanoma in situ', 'prostate cancer', 'Celecoxib', 'Mehp', 'Perfluorooctanoic acid', 'Fluoxetine', 'Decitabine', "3,3',4,4'-tetrachlorobiphenyl", 'POR', 'Estradiol', 'Tretinoin', 'Cobalt dichloride hexahydrate', 'D-serine']
 	slct_subjtype = [data['subject_type'].iloc[np.where(data['subject']==x)[0][0]] for x in slct_subj] # subject type
 	slct_idx = [i for i, x in enumerate(data['subject']) if x in slct_subj] # selected indices
 	subjtype_cnt = collections.Counter(slct_subjtype) # counter for each subject type
@@ -1643,6 +1836,11 @@ def plot_circos(**kw_args):
 	data = pd.concat(top_data)
 	data.to_csv('circos_data.csv')
 	dge_df = dge_df.loc[data.index]
+	
+	data['cell_type'] = [x.strip().lower() for x in data['cell_type']]
+	name_norm = {'cells':'somatic cells', 'tissue':'somatic cells', 't-cell':'t cells', 't-cells':'t cells', 'heart':'heart tissues', 'ko & s100a10 cells':'somatic cells', 'cancer cell':'somatic cells', 'cancer cells':'somatic cells', 'normal cells':'somatic cells', 'mcf7 cells':'mcf-7 cells', 'hl60 cell line':'hl60 cells', 'cd34+ cells':'hematopoietic stem cells'}
+	data['cell_type'] = [name_norm[x] if name_norm.has_key(x) else x for x in data['cell_type']]
+	
 	rdf = pd2r.py2ri(data)
 	ro.r.assign('data', rdf)
 	io.inst_print('Finish selecting the data and preparing for the first track...')
@@ -1692,12 +1890,23 @@ def plot_circos(**kw_args):
 	# unq_celltype = [x.title() for x in set(data['cell_type'])]
 	# data['cell_type'] = [x.title() for x in data['cell_type']]
 	celltype_map = dict(zip(unq_celltype, range(len(unq_celltype))))
-	celltype_cmap = plt.cm.get_cmap('Set3', len(unq_celltype))
-	celltype_colors = [mpl.colors.rgb2hex(y) for y in np.array([list(celltype_cmap(celltype_map[x]))[:3] for x in data['cell_type']])]
+	# celltype_cmap = plt.cm.get_cmap('Set3', len(unq_celltype))
+	# celltype_colors = [mpl.colors.rgb2hex(y) for y in np.array([list(celltype_cmap(celltype_map[x]))[:3] for x in data['cell_type']])]
+	cmaps = [(plt.cm.get_cmap('Set3', 12), 12), (plt.cm.get_cmap('Set1', 9), 9), (plt.cm.get_cmap('Dark2', 8), 8), (plt.cm.get_cmap('Paired', 12), 12), (plt.cm.get_cmap('Accent', max(1, len(unq_celltype)-41)), max(1, len(unq_celltype)-41))]
+	celltype_cmap = func.flatten_list([[cm(x) for x in range(cnum)] for cm, cnum in cmaps])
+	celltype_colors = [mpl.colors.rgb2hex(y) for y in np.array([list(celltype_cmap[celltype_map[x]])[:3] for x in data['cell_type']])]
+	# Seaborn Palette
+	# import seaborn as sns
+	# celltype_cmap = sns.color_palette('husl', n_colors=len(unq_celltype))
+	# celltype_colors = [mpl.colors.rgb2hex(y) for y in np.array([celltype_cmap[celltype_map[x]] for x in data['cell_type']])]
 	ro.r.assign('unq_celltype', unq_celltype)
 	ro.r.assign('celltype_colors', celltype_colors)
 	ro.r('names(celltype_colors) <- data$cell_type')
-	ro.r('unq_celltype_col <- celltype_colors[unlist(unq_celltype)]')
+	ctcmap = dict(list(set(zip(data['cell_type'], celltype_colors))))
+	ro.r.assign('unq_celltype_col', [ctcmap[x] for x in unq_celltype])
+	# ro.r('unq_celltype_col <- celltype_colors[unlist(unq_celltype)]')
+	# ro.r('unq_celltype_col <- celltype_colors[!is.na(celltype_colors)]')
+	ro.r('print(unq_celltype_col)')
 	io.inst_print('Finish preparing the data for the fourth track...')
 	# Prepare the data for the fifth track, signature density (deprecated)
 	sgn_subidx = pd.Series(np.zeros(data.shape[0]), index=data['subject'])
@@ -1735,13 +1944,13 @@ def plot_circos(**kw_args):
 	io.inst_print('Finish preparing the data for the fifth track...')
 	# Prepare the data for the sixth track, organisms
 	io.inst_print('Preparing the data for the sixth track...')
-	unq_orgnsm = list(set(data['organisms']))
+	unq_orgnsm = list(set(data['organism']))
 	orgnsm_map = dict(zip(unq_orgnsm, range(len(unq_orgnsm))))
 	orgnsm_cmap = plt.cm.get_cmap('Set2', 8)
-	orgnsm_colors = [mpl.colors.rgb2hex(plot.mix_white(orgnsm_cmap(2*orgnsm_map[x])[:3], ratio=0.2)) for x in data['organisms']]
+	orgnsm_colors = [mpl.colors.rgb2hex(plot.mix_white(orgnsm_cmap(2*orgnsm_map[x])[:3], ratio=0.2)) for x in data['organism']]
 	ro.r.assign('unq_orgnsm', unq_orgnsm)
 	ro.r.assign('orgnsm_colors', orgnsm_colors)
-	ro.r('names(orgnsm_colors) <- data$organisms')
+	ro.r('names(orgnsm_colors) <- data$organism')
 	ro.r('unq_orgnsm_col <- orgnsm_colors[unlist(unq_orgnsm)]')
 	io.inst_print('Finish preparing the data for the sixth track...')
 	# Prepare the data for the Chord diagram
@@ -1817,10 +2026,22 @@ def plot_circos(**kw_args):
 	ro.r('''circos.par('cell.padding'=c(0, 0, 0, 0))''')
 	# ro.r(r'''circos.track(factors=subj_fa, ylim=c(0,1), track.index=3, track.height=0.1)''')
 	# Fourth track
-	ro.r(r'''circos.track(factors=subj_fa, ylim=c(0,1), track.index=4, track.height=0.05, track.margin=c(0, 0.005), bg.border=NA)''')
-	ro.r(r'''mapply(function(k, v){
-		highlight.sector(data$subject[data$cell_type==k], track.index=4, col=add_transparency(v, 0.8), border=NA, cex=0.8, text.col='white', niceFacing=TRUE)
-	}, names(celltype_colors), celltype_colors)''')
+	# ro.r(r'''circos.track(factors=subj_fa, ylim=c(0,1), track.index=4, track.height=0.05, track.margin=c(0, 0.005), bg.border=NA)''')
+	# ro.r(r'''mapply(function(k, v){
+		# highlight.sector(data$subject[data$cell_type==k], track.index=4, col=add_transparency(v, 0.8), border=NA, cex=0.8, text.col='white', niceFacing=TRUE)
+	# }, names(celltype_colors), celltype_colors)''')
+	ro.r(r'''circos.track(factors=subj_fa, x=sgn_subidx, y=1:nrow(data), track.index=4, track.height=0.05, track.margin=c(0,0), bg.border=NA, panel.fun=function(x, y) {
+		xlim <- get.cell.meta.data('xlim')
+		ylim <- get.cell.meta.data('ylim')
+		xrange <- xlim[2] - xlim[1]
+		xcenter <- get.cell.meta.data('xcenter')
+		sector.index <- get.cell.meta.data('sector.index')
+		numx <- length(x)
+		for (sub_idx in 1:numx) {
+			x_coord <- xlim[1] + x[[sub_idx]] * xrange
+			circos.rect(x_coord-ux(0.05, 'mm'), 0, x_coord+ux(0.05, 'mm'), ylim[2], col=toString(celltype_colors[y[sub_idx]]), border=NA)
+		}
+	})''')
 	# Fifth track
 	# ro.r(r'''circos.track(factors=subj_fa, x=sgn_subidx, ylim=c(0,1), track.index=5, track.height=0.05, track.margin=c(0.001,0.001), bg.border=NA, panel.fun=function(x, y) {
 		# xlim <- get.cell.meta.data('xlim')
@@ -1847,9 +2068,9 @@ def plot_circos(**kw_args):
 		}
 	})''')
 	# Sixth track
-	ro.r(r'''circos.track(factors=subj_fa, ylim=c(0,1), track.index=6, track.height=0.05, track.margin=c(0.001,0.001), bg.border=NA)''')
+	ro.r(r'''circos.track(factors=subj_fa, ylim=c(0,1), track.index=6, track.height=0.05, track.margin=c(0.001,0.005))''')
 	ro.r(r'''mapply(function(k, v){
-		highlight.sector(data$subject[data$organisms==k], track.index=6, col=v, border=NA, cex=0.8, text.col='white', niceFacing=TRUE)
+		highlight.sector(data$subject[data$organism==k], track.index=6, col=v, border=NA, cex=0.8, text.col='white', niceFacing=TRUE)
 	}, names(orgnsm_colors), orgnsm_colors)''')
 	# Links
 	ro.r(r'''col_fun = colorRamp2(c(0.001,0.025,0.05), c('beige','coral2','darkmagenta'))''')
@@ -1897,6 +2118,85 @@ def plot_circos(**kw_args):
 	ro.r('circos.clear()')
 
 
+def _gsea(groups, udrg_sgn_df, probe_gene_map, sgndb_path, sample_path, method='signal_to_noise', permt_type='phenotype', permt_num=100, min_size=15, max_size=500, out_dir='gsea_output', keep_unkown_probe=False, fmt='xml', numprocs=1):
+	if (fmt == 'soft'):
+		from bionlp.spider import geo
+	else:
+		from bionlp.spider import geoxml as geo
+	import gseapy as gp
+
+	for geo_id, sgn_ids in groups:
+		# Select the sub signature table
+		sub_sgn_df = udrg_sgn_df.loc[sgn_ids]
+		ids = sub_sgn_df['id'] if hasattr(sub_sgn_df, 'id') else sub_sgn_df.index
+		# Prepair the gene expression profile and the perturbation labels
+		pert_ids, ctrl_ids = list(set('|'.join(sub_sgn_df['pert_ids']).split('|'))), list(set('|'.join(sub_sgn_df['ctrl_ids']).split('|')))
+		pert_geo_docs, ctrl_geo_docs = geo.parse_geos([os.path.join(sample_path, '.'.join([pert_id, fmt])) for pert_id in pert_ids], view='full', type='gsm', fmt=fmt), geo.parse_geos([os.path.join(sample_path, '.'.join([ctrl_id, fmt])) for ctrl_id in ctrl_ids], view='full', type='gsm', fmt=fmt)
+		pert_ge_dfs, ctrl_ge_dfs = [geo_doc['data']['VALUE'] for geo_doc in pert_geo_docs], [geo_doc['data']['VALUE'] for geo_doc in ctrl_geo_docs]
+		pert_df, ctrl_df = pd.concat(pert_ge_dfs, axis=1, join='inner').astype('float32'), pd.concat(ctrl_ge_dfs, axis=1, join='inner').astype('float32')
+		pert_lb, ctrl_lb, class_vec = 'pert', 'ctrl', ['pert'] * pert_df.shape[1] + ['ctrl'] * ctrl_df.shape[1]
+		join_df = pd.concat([pert_df, ctrl_df], axis=1, join='inner')
+		join_df.columns = pert_ids + ctrl_ids
+		del pert_geo_docs, ctrl_geo_docs, pert_ge_dfs[:], ctrl_ge_dfs[:], pert_df, ctrl_df
+		# Map the probes to gene symbols
+		plfm = sub_sgn_df['platform'].iloc[0]
+		if (probe_gene_map and probe_gene_map.has_key(plfm) and not probe_gene_map[plfm].empty):
+			pgmap = probe_gene_map[plfm]
+			if (not keep_unkown_probe):
+				probes = [idx for idx in join_df.index if idx in pgmap.index and pgmap.loc[idx] and not pgmap.loc[idx].isspace()]
+				join_df = join_df.loc[probes]
+			join_df.index = [[x.strip() for x in pgmap.loc[probe].split('///')][0] if (probe in pgmap.index) else [probe] for probe in join_df.index]
+
+		join_df.reset_index(inplace=True)
+		join_df.rename(columns={'ID_REF': 'NAME'}, inplace=True)
+		join_df['NAME'] = join_df['NAME'].apply(str)
+		# Call the GSEA API
+		try:
+			if (not os.path.exists(os.path.join(out_dir,geo_id+'up')) or (os.path.exists(os.path.join(out_dir,geo_id+'up')) and len(fs.read_file(os.path.join(sgndb_path, '%s_up.gmt'%geo_id))) > len(fs.listf(os.path.join(out_dir,geo_id+'up'), pattern='.*\.gsea\.pdf')))):
+				print 'doing '+geo_id+'_up'
+				gs_res = gp.gsea(data=join_df, gene_sets=os.path.join(sgndb_path, '%s_up.gmt'%geo_id), cls=class_vec, permutation_type=permt_type, permutation_num=permt_num, min_size=min_size, max_size=max_size, outdir=os.path.join(out_dir,geo_id+'up'), method=method, processes=numprocs, format='pdf')
+		except Exception as e:
+			print 'Error occured when conducting GSEA for up-regulated genes in %s!' % geo_id
+			print e
+		try:
+			if (not os.path.exists(os.path.join(out_dir,geo_id+'down')) or (os.path.exists(os.path.join(out_dir,geo_id+'down')) and len(fs.read_file(os.path.join(sgndb_path, '%s_down.gmt'%geo_id))) > len(fs.listf(os.path.join(out_dir,geo_id+'down'), pattern='.*\.gsea\.pdf')))):
+				print 'doing '+geo_id+'_down'
+				gs_res = gp.gsea(data=join_df, gene_sets=os.path.join(sgndb_path, '%s_down.gmt'%geo_id), cls=class_vec, permutation_type=permt_type, permutation_num=permt_num, min_size=min_size, max_size=max_size, outdir=os.path.join(out_dir,geo_id+'down'), method=method, processes=numprocs, format='pdf')
+		except Exception as e:
+			print 'Error occured when conducting GSEA for down-regulated genes in %s!' % geo_id
+			print e
+		del join_df
+
+	
+def run_gsea():
+	input_ext = os.path.splitext(opts.loc)[1]
+	if (input_ext == '.xlsx' or input_ext == '.xls'):
+		sgn_df = pd.read_excel(opts.loc)
+	elif (input_ext == '.csv'):
+		sgn_df = pd.read_csv(opts.loc)
+	elif (input_ext == '.npz'):
+		sgn_df = io.read_df(opts.loc)
+	else:
+		print 'Unsupported input file extension %s, please use csv or npz file!' % input_ext
+		sys.exit(1)
+	udrg_sgn_df = sgn_df.set_index('id').dropna()
+	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
+	method = kwargs.setdefault('method', 'signal_to_noise')
+	sgn_min_size, sgn_max_size = kwargs.setdefault('min_size', 5), kwargs.setdefault('max_size', 100)
+	permt_type, permt_num = kwargs.setdefault('permt_type', 'phenotype'), kwargs.setdefault('permt_num', 100)
+	keep_unkown_probe = kwargs.setdefault('all_probes', False)
+	probe_gene_map = kwargs.setdefault('pgmap', '')
+	probe_gene_map = probe_gene_map if (probe_gene_map and os.path.exists(probe_gene_map)) else None
+	par_dir, basename = os.path.abspath(os.path.join(opts.loc, os.path.pardir)), os.path.splitext(os.path.basename(opts.loc))[0].split('_udrg')[0]
+	sgndb_path = os.path.join(kwargs.setdefault('sgndb', os.path.join(gsc.GEO_PATH, 'sgndb')), basename)
+	sample_path = os.path.join(gsc.GEO_PATH, opts.type, basename, 'samples')
+	out_dir = os.path.join(par_dir, 'gsea', method.lower(), basename) if opts.output is None else os.path.join(opts.output, method.lower(), basename)
+	groups = udrg_sgn_df.groupby('geo_id').groups.items()
+	task_bnd = njobs.split_1d(len(groups), split_num=opts.np, ret_idx=True)
+	_gsea(groups, udrg_sgn_df=udrg_sgn_df, probe_gene_map=probe_gene_map, sgndb_path=sgndb_path, sample_path=sample_path, method=method, permt_type=permt_type, permt_num=permt_num, min_size=sgn_min_size, max_size=sgn_max_size, out_dir=out_dir, keep_unkown_probe=keep_unkown_probe, numprocs=opts.np)
+	# _ = njobs.run_pool(_gsea, n_jobs=opts.np, dist_param=['groups'], groups=[groups[task_bnd[i]:task_bnd[i+1]] for i in range(opts.np)], udrg_sgn_df=udrg_sgn_df, probe_gene_map=probe_gene_map, sgndb_path=sgndb_path, sample_path=sample_path, method=method, permt_type=permt_type, permt_num=permt_num, min_size=sgn_min_size, max_size=sgn_max_size, out_dir=out_dir, keep_unkown_probe=keep_unkown_probe, numprocs=1) # GSEAPY does not allow it to be a children process
+
+
 def main():
 	
 	if (opts.method is None):
@@ -1921,6 +2221,8 @@ def main():
 		slct_featset()
 	elif (opts.method == 'm2e'):
 		gsm2gse()
+	elif (opts.method == 'g2m'):
+		gpl2map(opts.type)
 	elif (opts.method == 'p2d'):
 		cltpred2df()
 	elif (opts.method == 'ggp'):
@@ -1935,6 +2237,8 @@ def main():
 		sgn2dge()
 	elif (opts.method == 'pltdgep'):
 		plot_dgepval()
+	elif (opts.method == 'd2g'):
+		dge2udrg()
 	elif (opts.method == 'd2s'):
 		dge2simmt()
 	elif (opts.method == 'simhrc'):
@@ -1971,13 +2275,15 @@ def main():
 		plot_sampclt(with_cns=opts.cns)
 	elif (opts.method == 'circos'):
 		plot_circos()
+	elif (opts.method == 'gsea'):
+		run_gsea()
 
 
 if __name__ == '__main__':
 	# Parse commandline arguments
 	op = OptionParser()
 	op.add_option('-p', '--pid', default=-1, action='store', type='int', dest='pid', help='indicate the process ID')
-	op.add_option('-n', '--np', default=-1, action='store', type='int', dest='np', help='indicate the number of processes used for calculation')
+	op.add_option('-n', '--np', default=psutil.cpu_count(), action='store', type='int', dest='np', help='indicate the number of processes used for calculation')
 	op.add_option('-f', '--fmt', default='npz', help='data stored format: csv or npz [default: %default]')
 	op.add_option('-s', '--spfmt', default='csr', help='sparse data stored format: csr or csc [default: %default]')
 	op.add_option('-t', '--type', default='xml', help='file type: soft, xml, txt [default: %default]')
@@ -1999,7 +2305,7 @@ if __name__ == '__main__':
 	if len(args) > 0:
 		op.print_help()
 		op.error('Please input options instead of arguments.')
-		exit(1)
+		sys.exit(1)
 
 	# Logging setting
 	logging.basicConfig(level=logging.INFO if opts.verbose else logging.ERROR, format='%(asctime)s %(levelname)s %(message)s')
@@ -2016,6 +2322,15 @@ if __name__ == '__main__':
 				gsc.RXNAV_PATH = gsc_cfg['RXNAV_PATH']
 			if (gsc_cfg['BIOGRID_PATH'] is not None and os.path.exists(gsc_cfg['BIOGRID_PATH'])):
 				gsc.BIOGRID_PATH = gsc_cfg['BIOGRID_PATH']
+		nihgene_cfg = cfgr('bionlp.spider.nihgene', 'init')
+		if (len(nihgene_cfg) > 0):	
+			if (nihgene_cfg['GENE_PATH'] is not None and os.path.exists(nihgene_cfg['GENE_PATH'])):
+				nihgene.GENE_PATH = nihgene_cfg['GENE_PATH']
+		nihnuccore_cfg = cfgr('bioinfo.spider.nihnuccore', 'init')
+		if (len(nihnuccore_cfg) > 0):	
+			if (nihnuccore_cfg['GENE_PATH'] is not None and os.path.exists(nihnuccore_cfg['GENE_PATH'])):
+				nihgene.GENE_PATH = nihnuccore_cfg['GENE_PATH']
+				
 		common_cfg = cfgr('gsx_helper', 'common')
 		if (len(common_cfg) > 0):
 			if (common_cfg.has_key('RAMSIZE') and common_cfg['RAMSIZE'] is not None):

@@ -10,6 +10,7 @@
 #
 
 import os
+import sys
 import logging
 import ast
 from optparse import OptionParser
@@ -197,7 +198,7 @@ if __name__ == '__main__':
 	if len(args) > 0:
 		op.print_help()
 		op.error('Please input options instead of arguments.')
-		exit(1)
+		sys.exit(1)
 
 	# Logging setting
 	logging.basicConfig(level=logging.INFO if opts.verbose else logging.ERROR, format='%(asctime)s %(levelname)s %(message)s')
