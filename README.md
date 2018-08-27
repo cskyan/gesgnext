@@ -220,7 +220,7 @@ It will also generate separated label data `gsm_y_[0-2].npz` and `gsm_lb_[0-2].n
 
 Feature selection method can also be applied to the dataset in advance by uncommenting the corresponding code line in function `gen_data` inside `bin\gsx_gendata.py`.
 
-If you only want to apply feature selection on the generated dataset or generate separated label data, you can use command line parameter `-l`. Make sure your dataset has already been renamed as 'gse_X.npz' or 'gsm_X_[0-2].npz', and the processed dataset will be generated as '#method#+#num_of_features#\_[gse\|gsm]\_X[_[0-2]].npz'.
+If you only want to apply feature selection on the generated dataset or generate separated label data, you can use command line parameter `-l`. Make sure your dataset has already been renamed as 'gse_X.npz' or 'gsm_X_[0-2].npz', and the processed dataset will be generated as '#method#+#num_of_features#\_[gse|gsm]\_X[_[0-2]].npz'.
 
 ## Common Parameter Setting
 

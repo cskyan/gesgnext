@@ -43,6 +43,7 @@ from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.multiclass import OneVsRestClassifier
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.metrics.pairwise import pairwise_distances
+from keras.utils.io_utils import HDF5Matrix
 
 from bionlp.spider import geoxml as geo, annot, hgnc, dnorm, rxnav, sparql
 # from bionlp.model.fzcmeans import FZCMeans, CNSFZCMeans
@@ -119,37 +120,36 @@ def build_model(mdl_func, mdl_t, mdl_name, tuned=False, pr=None, mltl=False, mlt
 		
 # Keras Deep Learning
 def gen_keras(input_dim, output_dim, model='simple', **kwargs):
-	udargs = []
-	mdl_map = {'simple':(simple_nn, 'clf'), 'tunable':(tunable_nn, 'clf'), 'cfkmeans':(cfkmeans_nn, 'clt')}
-	udargs.extend(['input_dim', 'output_dim', 'backend', 'device', 'session'])
+	from bionlp.model import cfkmeans
+	mdl_map = {'simple':(simple_nn, 'clf'), 'tunable':(tunable_nn, 'clf'), 'cfkmeans':(cfkmeans.cfkmeans_mdl, 'clt')}
 	mdl = mdl_map[model]
-	return kerasext.gen_mdl(input_dim, output_dim, mdl[0], mdl[1], backend=opts.dend, verbose=opts.verbose, udargs=udargs, **kwargs)
+	return kerasext.gen_mdl(input_dim, output_dim, mdl[0], mdl[1], backend=opts.dend, verbose=opts.verbose, **kwargs)
 	
 	
 # Constraint Fuzzy K-means Neural Network
-def _cfkmeans_loss(Y_true, Y):
-	import keras.backend as K
-	return K.mean(Y)
+# def _cfkmeans_loss(Y_true, Y):
+	# import keras.backend as K
+	# return K.mean(Y)
 	
 
-def cfkmeans_nn(input_dim=1, output_dim=1, constraint_dim=0, batch_size=32, backend='th', device='', session=None, internal_dim=64, metric='euclidean', gamma=0.01, **kwargs):
-	from keras.layers import Input, Lambda, merge
-	from keras.optimizers import SGD
-	from bionlp.model.cfkmeans import CFKU, CFKD, CFKC
-	import keras.backend as K
-	with kerasext.gen_cntxt(backend, device):
-		X_input = Input(shape=(input_dim,), dtype=K.floatx(), name='X')
-		C_input = Input(shape=(constraint_dim,), name='CI')
-		cfku = CFKU(output_dim=output_dim, input_dim=input_dim, batch_size=batch_size, name='U', session=session)(X_input)
-		cfkd = CFKD(output_dim=output_dim, input_dim=input_dim, metric=metric, batch_size=batch_size, name='D', session=session)([X_input, cfku])
-		loss = merge([cfku, cfkd], mode='mul', name='L')
-		rglz = Lambda(lambda x: gamma * K.tanh(x), name='R')(cfku)
-		constr = CFKC(output_dim=output_dim, input_dim=input_dim, batch_size=batch_size, name='C', session=session)([C_input, cfku, cfkd])
-		J = merge([loss, rglz, constr], mode='sum', name='J')
-		model = kerasext.gen_cltmdl(context=dict(backend=backend, device=device), session=session, input=[X_input, C_input], output=[J], constraint_dim=constraint_dim)
-		optmzr = SGD(lr=0.1, decay=1e-6, momentum=0.9, nesterov=True)
-		model.compile(loss=_cfkmeans_loss, optimizer=optmzr, metrics=['accuracy', 'mse'])
-	return model
+# def cfkmeans_nn(input_dim=1, output_dim=1, constraint_dim=0, batch_size=32, backend='th', device='', session=None, internal_dim=64, metric='euclidean', gamma=0.01, **kwargs):
+	# from keras.layers import Input, Lambda, merge
+	# from keras.optimizers import SGD
+	# from bionlp.model.cfkmeans import CFKU, CFKD, CFKC
+	# import keras.backend as K
+	# with kerasext.gen_cntxt(backend, device):
+		# X_input = Input(shape=(input_dim,), dtype=K.floatx(), name='X')
+		# C_input = Input(shape=(constraint_dim,), name='CI')
+		# cfku = CFKU(output_dim=output_dim, input_dim=input_dim, batch_size=batch_size, name='U', session=session)(X_input)
+		# cfkd = CFKD(output_dim=output_dim, input_dim=input_dim, metric=metric, batch_size=batch_size, name='D', session=session)([X_input, cfku])
+		# loss = merge([cfku, cfkd], mode='mul', name='L')
+		# rglz = Lambda(lambda x: gamma * K.tanh(x), name='R')(cfku)
+		# constr = CFKC(output_dim=output_dim, input_dim=input_dim, batch_size=batch_size, name='C', session=session)([C_input, cfku, cfkd])
+		# J = merge([loss, rglz, constr], mode='sum', name='J')
+		# model = kerasext.gen_cltmdl(context=dict(backend=backend, device=device), session=session, input=[X_input, C_input], output=[J], constraint_dim=constraint_dim)
+		# optmzr = SGD(lr=0.1, decay=1e-6, momentum=0.9, nesterov=True)
+		# model.compile(loss=_cfkmeans_loss, optimizer=optmzr, metrics=['accuracy', 'mse'])
+	# return model
 
 
 # Tunable Deep Learning Model
@@ -341,8 +341,8 @@ def gen_nnclt_models(input_dim, output_dim, constraint_dim=0, batch_size=32, oth
 		pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
 		clt_names = []
 		for clt_name, clt in [
-			('3L64U Neural Network', gen_keras(input_dim, output_dim, model='cfkmeans', constraint_dim=constraint_dim, batch_size=batch_size, internal_dim=64, metric='manhattan', gamma=0.01)),
-			('3L96U Neural Network', gen_keras(input_dim, output_dim, model='cfkmeans', constraint_dim=constraint_dim, batch_size=batch_size, internal_dim=96, metric='manhattan', gamma=0.01))
+			('3L64U Neural Network', gen_keras(input_dim, output_dim, model='cfkmeans', constraint_dim=constraint_dim, batch_size=batch_size, internal_dim=64, metric='manhattan', gamma=0.01, **kwargs)),
+			('3L96U Neural Network', gen_keras(input_dim, output_dim, model='cfkmeans', constraint_dim=constraint_dim, batch_size=batch_size, internal_dim=96, metric='manhattan', gamma=0.01, **kwargs))
 		]:
 			yield clt_name, clt
 			clt_names.append(clt_name)
@@ -389,7 +389,19 @@ def gen_cbclt_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 		# ('CNZ-HDBSCAN', Pipeline([('distcalc', dstclc.gen_dstclc(dstclc.cns_dist, kw_args={'metric':'euclidean', 'C':kwargs.setdefault('constraint', None), 'a':0.4, 'n_jobs':opts.np})), ('clt', hdbscan.HDBSCAN(min_cluster_size=2, metric='precomputed', n_jobs=opts.np))])),
 		# ('ManhCNZ-DBSCAN', Pipeline([('distcalc', dstclc.gen_dstclc(dstclc.cns_dist, kw_args={'metric':'manhattan', 'C':kwargs.setdefault('constraint', None), 'a':0.4, 'n_jobs':opts.np})), ('clt', DBSCAN(metric='precomputed', n_jobs=opts.np))])),
 		# ('ManhCNZ-HDBSCAN', Pipeline([('distcalc', dstclc.gen_dstclc(dstclc.cns_dist, kw_args={'metric':'manhattan', 'C':kwargs.setdefault('constraint', None), 'a':0.4, 'n_jobs':opts.np})), ('clt', hdbscan.HDBSCAN(min_cluster_size=2, metric='precomputed', n_jobs=opts.np))])),
-		('Kallima', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=0.5, nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=0.4, rcexp=1, cond=0.3, cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		('Kallima', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.5), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, distmt=kwargs.setdefault('distmt', None), n_jobs=opts.np))])),
+		# ('Kallima-a-0_4', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.4), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-a-0_3', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.3), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-a-0_6', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.6), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-a-0_7', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.7), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-th-0_3', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.3), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-th-0_2', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.2), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-th-0_5', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.5), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-th-0_6', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.6), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-ph-0_2', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.2), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-ph-0_1', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.1), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-ph-0_4', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.4), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
+		# ('Kallima-ph-0_5', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.5), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
 		# ('Manh-DBSCAN', Pipeline([('clt', DBSCAN(metric='manhattan', algorithm='ball_tree', n_jobs=opts.np))])),
 		# ('FuzzyCmeans', Pipeline([('clt', FZCMeans(n_clusters=1500, random_state=0))])),
 		# ('CNSFuzzyCmeans', Pipeline([('clt', CNSFZCMeans(n_clusters=1500, a=0.4, random_state=0, n_jobs=opts.np))])),
@@ -585,7 +597,7 @@ def gen_mdl_params():
 		yield mdl_name, mdl, params
 			
 			
-def all():
+def all_entry():
 	gse_clf()
 	gsm_clf()
 	gsm_clt()
@@ -612,6 +624,7 @@ def gse_clf():
 	
 	## Cross validation for GSE
 	print 'Cross validation for GSE'
+	print 'Dataset size: X:%s, labels:%s' % (str(gse_X.shape), str(gse_Y.shape))
 	gse_filt_names, gse_clf_names, gse_pl_names = [[] for i in range(3)]
 	gse_pl_set = set([])
 	gse_model_iter = gen_cb_models if opts.comb else gen_bm_models
@@ -637,6 +650,7 @@ def gsm_clf():
 	print 'Cross validation for GSM'
 	orig_wd = os.getcwd()
 	for i, (X, Y) in enumerate(zip(gsm_Xs, gsm_Ys)):
+		print 'Dataset size: X:%s, labels:%s' % (str(X.shape), str(Y.shape))
 		# Switch to sub-working directory
 		new_wd = os.path.join(orig_wd, str(i) if pid == -1 else str(pid))
 		fs.mkdir(new_wd)
@@ -671,11 +685,11 @@ def gsm_clt():
 	## Clustering for GSM
 	print 'Clustering for GSM ...'
 	for i, (X, y, c) in enumerate(zip(Xs, labels, Ys)):
-		c = c.as_matrix()
 		# Transform the GEO IDs into constraints
 		# gse_ids = gsm2gse.loc[X.index]
 		# gseidc = label_binarize(gse_ids.as_matrix(), classes=gse_ids.gse_id.value_counts().index)
 		# c = np.hstack((c, gseidc))
+		print 'Dataset size: X:%s, labels:%s, constraints:%s' % (str(X.shape), str(y.shape), str(c.shape))
 		filt_names, clt_names, pl_names = [[] for j in range(3)]
 		pl_set = set([])
 		model_iter = gen_cbclt_models if opts.comb else gen_clt_models
@@ -683,7 +697,12 @@ def gsm_clt():
 			y = label_binarize(y, classes=list(set([l for l in y.reshape((-1,)) if l != -1])))
 			# model_iter = gen_nnclt_models(input_dim=X.shape[1], output_dim=y.shape[1] if len(y.shape) == 2 else 1, constraint_dim=c.shape[1] if len(c.shape) == 2 else 1, batch_size=opts.bsize, other_clts=gsm_model_iter)
 			model_iter = gen_nnclt_models(input_dim=X.shape[1], output_dim=y.shape[1] if len(y.shape) == 2 else 1, constraint_dim=c.shape[1] if len(c.shape) == 2 else 1, batch_size=opts.bsize, other_clts=None)
-		model_param = dict(tuned=opts.best, glb_filtnames=filt_names, glb_cltnames=clt_names, is_fuzzy=opts.fuzzy, is_nn=False if opts.dend is None else True, constraint=c)
+		try:
+			distmt = HDF5Matrix(opts.cache, 'distmt')
+		except Exception as e:
+			print e
+			distmt = None
+		model_param = dict(tuned=opts.best, glb_filtnames=filt_names, glb_cltnames=clt_names, is_fuzzy=opts.fuzzy, is_nn=False if opts.dend is None else True, constraint=c, distmt=distmt)
 		global_param = dict(comb=opts.comb, pl_names=pl_names, pl_set=pl_set)
 		# txtclt.cross_validate(X, y, model_iter, model_param, kfold=opts.kfold, cfg_param=cfgr('bionlp.txtclt', 'cross_validate'), global_param=global_param, lbid=pid)
 		txtclt.clustering(X, model_iter, model_param, cfg_param=cfgr('bionlp.txtclt', 'clustering'), global_param=global_param, lbid=pid)
@@ -1359,7 +1378,7 @@ def main():
 	elif (opts.method == 'autoclf'):
 		autoclf(opts.ftype)
 		return
-	all()
+	all_entry()
 
 
 if __name__ == '__main__':
@@ -1368,24 +1387,24 @@ if __name__ == '__main__':
 	op.add_option('-k', '--kfold', default=10, action='store', type='int', dest='kfold', help='indicate the K fold cross validation')
 	op.add_option('-p', '--pid', default=-1, action='store', type='int', dest='pid', help='indicate the process ID')
 	op.add_option('-n', '--np', default=-1, action='store', type='int', dest='np', help='indicate the number of processes used for calculation')
-	op.add_option('-o', '--omp', action='store_true', dest='omp', default=False, help='use openmp multi-thread')
 	op.add_option('-f', '--fmt', default='npz', help='data stored format: csv or npz [default: %default]')
 	op.add_option('-s', '--spfmt', default='csr', help='sparse data stored format: csr or csc [default: %default]')
 	op.add_option('-t', '--tune', action='store_true', dest='tune', default=False, help='firstly tune the hyperparameters')
-	op.add_option('-r', '--solver', default='particle_swarm', action='store', type='str', dest='solver', help='solver used to tune the hyperparameters: particle_swarm, grid search, or random search, etc.')
+	op.add_option('-r', '--solver', default='particle_swarm', action='store', type='str', dest='solver', help='solver used to tune the hyperparameters: particle_swarm, grid_search, or random_search, etc.')
 	op.add_option('-b', '--best', action='store_true', dest='best', default=False, help='use the tuned hyperparameters')
 	op.add_option('-c', '--comb', action='store_true', dest='comb', default=False, help='run the combined methods')
 	op.add_option('-l', '--mltl', action='store_true', dest='mltl', default=False, help='use multilabel strategy')
 	op.add_option('-a', '--avg', default='micro', help='averaging strategy for performance metrics: micro or macro [default: %default]')
-	op.add_option('-d', '--dend', dest='dend', help='deep learning backend: tf or th')
-	op.add_option('-g', '--gpunum', default=1, action='store', type='int', dest='gpunum', help='indicate the gpu device number')
-	op.add_option('-q', '--gpuq', dest='gpuq', help='prefered gpu device queue')
-	op.add_option('-z', '--bsize', default=32, action='store', type='int', dest='bsize', help='indicate the batch size used in deep learning')
 	op.add_option('-e', '--ftype', default='gse', type='str', dest='ftype', help='the document type used to generate data')
 	op.add_option('-u', '--fuzzy', action='store_true', dest='fuzzy', default=False, help='use fuzzy clustering')
 	op.add_option('-j', '--thrshd', default='mean', type='str', dest='thrshd', help='threshold value')
 	op.add_option('-w', '--cache', default='.cache', help='the location of cache files')
 	op.add_option('-x', '--maxt', default=32, action='store', type='int', dest='maxt', help='indicate the maximum number of trials')
+	op.add_option('-d', '--dend', dest='dend', help='deep learning backend: tf or th')
+	op.add_option('-z', '--bsize', default=32, action='store', type='int', dest='bsize', help='indicate the batch size used in deep learning')
+	op.add_option('-o', '--omp', action='store_true', dest='omp', default=False, help='use openmp multi-thread')
+	op.add_option('-g', '--gpunum', default=1, action='store', type='int', dest='gpunum', help='indicate the gpu device number')
+	op.add_option('-q', '--gpuq', dest='gpuq', help='prefered gpu device queue')
 	op.add_option('-i', '--input', default='gsc', help='input source: gsc or geo [default: %default]')
 	op.add_option('-m', '--method', help='main method to run')
 	op.add_option('-v', '--verbose', action='store_true', dest='verbose', default=False, help='display detailed information')

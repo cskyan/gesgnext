@@ -27,6 +27,7 @@ import scipy as sp
 from scipy import misc
 import pandas as pd
 import networkx as nx
+from sklearn.metrics.pairwise import pairwise_distances as pdist
 
 from bioinfo.spider import nihnuccore
 from bionlp.spider import annot, sparql, nihgene
@@ -196,7 +197,9 @@ def _gpl2map(gpl_fpaths, fmt='xml'):
 		has_cols = dict([(col, col in doc['data'].columns # whether has this column
 				and any([kw in doc['col_desc'][doc['data'].columns.tolist().index(col) + 1].upper() for kw in ['ACCESSION', 'GENEBANK']]) # further confirm the content of this column
 				) for col in ['GB_LIST', 'GB_ACC']] # Gene Bank Accession Number
-			+ [('GENE', 'GENE' in doc['data'].columns and doc['col_desc'][doc['data'].columns.tolist().index('GENE') + 1].upper().startswith('ENTREZ GENE ID'))]) # ENTREZ GENE ID
+			+ [(col, col in doc['data'].columns # whether has this column
+				and any([kw in doc['col_desc'][doc['data'].columns.tolist().index(col) + 1].upper() for kw in ['ENTREZ GENE']]) # further confirm the content of this column
+				) for col in ['GENE', 'ENTREZ_GENE_ID']]) # ENTREZ GENE ID
 		if (any(empty) and (has_cols['GB_LIST'] or has_cols['GB_ACC'])): # first priority
 			col = 'GB_LIST' if has_cols['GB_LIST'] else 'GB_ACC'
 			gene_ids = doc['data'][col].apply(lambda x: str(x).strip(';,| ')).apply(lambda x: x.split(';') if x else []).apply(lambda x: func.flatten_list([dx.split(',') for dx in x if dx and not dx.isspace()])).apply(lambda x: func.flatten_list([dx.split('|') for dx in x if dx and not dx.isspace()])).apply(lambda x: func.flatten_list([dx.split(' ') for dx in x if dx and not dx.isspace()]))
@@ -205,25 +208,26 @@ def _gpl2map(gpl_fpaths, fmt='xml'):
 			query_res = []
 			for gene_doc in nihnuccore.parse_genes(nihnuccore.fetch_gene(gene_ids.tolist(), ret_strio=True)):
 				if (type(gene_doc) is list):
-					query_res.append(' /// '.join([gd['symbol'] for gd in gene_doc if gd.has_key('symbol') and gd['symbol']]))
+					query_res.append(' /// '.join([gd['symbol'] for gd in gene_doc if gd.has_key('symbol') and gd['symbol'] and not gd['symbol'].isspace()]))
 				else:
-					query_res.append(gene_doc['symbol'] if gene_doc.has_key('symbol') and gene_doc['symbol'] else '')
+					query_res.append(gene_doc['symbol'] if gene_doc.has_key('symbol') and gene_doc['symbol'] and not gene_doc['symbol'].isspace() else '')
 			query_res = pd.Series(query_res, index=doc['data'].index)
 			if (genes.empty):
 				genes = query_res
 			else:
 				genes.loc[empty] = query_res.loc[empty]
 			empty[empty] = [not x or str(x).isspace() for x in genes[empty]]
-		if (any(empty) and has_cols['GENE']): # second priority
+		if (any(empty) and (has_cols['GENE'] or has_cols['ENTREZ_GENE_ID'])): # second priority
+			col = 'GENE' if has_cols['GENE'] else 'ENTREZ_GENE_ID'
 			gene_ids = doc['data'][col].apply(lambda x: str(x).strip(';,| ')).apply(lambda x: x.split(';') if x else []).apply(lambda x: func.flatten_list([dx.split(',') for dx in x if dx and not dx.isspace()])).apply(lambda x: func.flatten_list([dx.split('|') for dx in x if dx and not dx.isspace()])).apply(lambda x: func.flatten_list([dx.split(' ') for dx in x if dx and not dx.isspace()]))
 			print 'Converting the Entrez GENE IDs %s of %s... into Gene Symbol...' % (','.join(func.flatten_list(gene_ids.iloc[empty][:5].tolist())), doc['id'])
 			# query_res = pd.Series([gene_doc['symbol'] if gene_doc.has_key('symbol') and gene_doc['symbol'] else '' for gene_doc in nihgene.parse_genes(nihgene.fetch_gene(gene_ids, ret_strio=True))], index=doc['data'].index)
 			query_res = []
 			for gene_doc in nihgene.parse_genes(nihgene.fetch_gene(gene_ids.tolist(), ret_strio=True)):
 				if (type(gene_doc) is list):
-					query_res.append(' /// '.join([gd['symbol'] for gd in gene_doc if gd.has_key('symbol') and gd['symbol']]))
+					query_res.append(' /// '.join([gd['symbol'] for gd in gene_doc if gd.has_key('symbol') and gd['symbol'] and not gd['symbol'].isspace()]))
 				else:
-					query_res.append(gene_doc['symbol'] if gene_doc.has_key('symbol') and gene_doc['symbol'] else '')
+					query_res.append(gene_doc['symbol'] if gene_doc.has_key('symbol') and gene_doc['symbol'] and not gene_doc['symbol'].isspace() else '')
 			query_res = pd.Series(query_res, index=doc['data'].index)
 			if (genes.empty):
 				genes = query_res
@@ -250,8 +254,13 @@ def gpl2map(fmt='xml'):
 			task_bnd = njobs.split_1d(len(gpl_fpaths), split_num=opts.np, ret_idx=True)
 			pgs = njobs.run_pool(_gpl2map, n_jobs=opts.np, dist_param=['gpl_fpaths'], gpl_fpaths=[gpl_fpaths[task_bnd[i]:task_bnd[i+1]] for i in range(opts.np)], fmt=fmt)
 			probe_gene = func.flatten_list(pgs)
+		io.inst_print('Finish mapping probe to gene in dataset %s!' % label)
+		io.inst_print('Saving results...')
 		probe_gene_map = dict(probe_gene)
+		pgm_df = pd.DataFrame(pd.concat(probe_gene_map.values()))
+		io.write_df(pgm_df, os.path.join(platform_path, 'probe_gene_map.npz'))
 		io.write_obj(probe_gene_map, os.path.join(platform_path, 'probe_gene_map.pkl'))
+		io.inst_print('Finish saving to disk!')
 
 	
 def _cltpred2df(Xs, Ys, labels, lbids, predf_patn):
@@ -324,7 +333,7 @@ def gen_gsmclt_pair():
 	return gsmclt_pairs
 
 
-def _gsmclt_pair(X, Y, z, gsm2gse, lbid, thrshd=0.5, cache_path='.cache', fname=None):
+def _gsmclt_pair(X, Y, z, gsm2gse, lbid, thrshd=0.5, iterative=False, cache_path='.cache', n_jobs=1, fname=None):
 	fname = 'gsmclt_pair_%s' % lbid if (fname is None) else fname
 	cachef = os.path.join(cache_path, fname + '.npz')
 	if (os.path.exists(cachef)):
@@ -346,64 +355,85 @@ def _gsmclt_pair(X, Y, z, gsm2gse, lbid, thrshd=0.5, cache_path='.cache', fname=
 	ctrl_pert_clts = {}
 	for clt in clusters:
 		# Must be within the same GEO document
-		gse_ids = gsm2gse.ix[clt]
+		gse_ids = gsm2gse.loc[clt]
 		for gse_id in gse_ids.gse_id.value_counts().index:
-			common_gseids = gse_ids[gse_ids == gse_id]
+			common_gseids = gse_ids[gse_ids.gse_id == gse_id]
 			if (common_gseids.shape[0] < gse_ids.shape[0]):
 				print 'Impure cluster with %.2f%% extra GEO studies:' % (1 - 1.0 * common_gseids.shape[0] / gse_ids.shape[0])
 				break
 			cln_clt = common_gseids.index.tolist()
-			# Control group or perturbation group
-			clt_y = Y.ix[cln_clt]
-			clty_sum = clt_y.sum(axis=1)
-			clt_y = clt_y.iloc[np.where(np.logical_and(clty_sum != 0, clty_sum != 2))[0]]
-			pure_clty = clt_y.iloc[np.where(clt_y.sum(axis=1) == 1)[0]]
+			# Control group or perturbation group (It will ignore the samples predicted as both control and perturbation, or neither)
+			# clt_y = Y.ix[cln_clt]
+			# clty_sum = clt_y.sum(axis=1)
+			# clt_y = clt_y.iloc[np.where(np.logical_and(clty_sum != 0, clty_sum != 2))[0]]
+			# pure_clty = clt_y.iloc[np.where(clt_y.sum(axis=1) == 1)[0]]
 			# print clt_y.shape, pure_clty.shape
-			if (pure_clty.empty or pure_clty.shape[0] == 0): continue
-			if (pure_clty.shape[0] < clt_y.shape[0]):
+			# if (pure_clty.empty or pure_clty.shape[0] == 0): continue
+			# if (pure_clty.shape[0] < clt_y.shape[0]):
 				# print clt_y.pert
 				# print clt_y.ctrl
-				print 'Impure cluster with %.2f%% ctrls, %.2f%% perts, and %.2f%% mixtures:' % (1.0 * np.where(clt_y.ctrl == 1)[0].shape[0] / clt_y.shape[0], 1.0 * np.where(clt_y.pert == 1)[0].shape[0] / clt_y.shape[0], 1.0 * np.where(clt_y.sum(axis=1) == 2)[0].shape[0] / clt_y.shape[0])
-			cln_clt = pure_clty.index.tolist()
+				# print 'Impure cluster with %.2f%% ctrls, %.2f%% perts, and %.2f%% mixtures:' % (1.0 * np.where(clt_y.ctrl == 1)[0].shape[0] / clt_y.shape[0], 1.0 * np.where(clt_y.pert == 1)[0].shape[0] / clt_y.shape[0], 1.0 * np.where(clt_y.sum(axis=1) == 2)[0].shape[0] / clt_y.shape[0])
+			# cln_clt = pure_clty.index.tolist()
 			ctrl_pert_clts.setdefault(gse_id, [[], []])[Y.ix[cln_clt[0]].pert].append(cln_clt)
 	# print 'Refined Cluster Number:%s' % dict([(gse_id, [len(clts[0]), len(clts[1])]) for gse_id, clts in ctrl_pert_clts.iteritems()])
 	# print ctrl_pert_clts
 	# Enumerate every pair of control and perturbation group
 	geo_ids, ctrl_ids, pert_ids, tissues, organisms, platforms = [[] for x in range(6)]
+	first_pass = True
 	for gse_id, cpclts in ctrl_pert_clts.iteritems():
-		# print gse_id, len(cpclts[0]), len(cpclts[1])
-		# Construct the GSM graph
-		# gsms = list(set(func.flatten_list(cpclts)))
-		# gsm_id_map = dict(zip(gsms, range(len(gsms))))
-		# gsm_X = X.loc[gsms]
-		# dist_mt = pdist(X, metric='euclidean', n_jobs=n_jobs)
-		# pw_dist, cnd_pw = [], []
-		# for ctrl, pert in itertools.product(cpclts[0], cpclts[1]):
+		## Construct the GSM graph
+		# Extract all the GSM
+		gsms = list(set(func.flatten_list(cpclts)))
+		gsm_id_map = dict(zip(gsms, range(len(gsms))))
+		# Retrieve the data for each GSM
+		gsm_X = X.loc[gsms]
+		# Calculate the pairwise distance
+		dist_mt = pdist(gsm_X, metric='euclidean', n_jobs=n_jobs)
+		pw_dist, cnd_pw = [], []
+		for ctrl, pert in itertools.product(cpclts[0], cpclts[1]):
 			# Filter the uninterpretable pairs
-			# ctrl_idx, pert_idx = [gsm_id_map[x] for x in ctrl], [gsm_id_map[x] for x in pert]
+			ctrl_idx, pert_idx = [gsm_id_map[x] for x in ctrl], [gsm_id_map[x] for x in pert]
 			# Obtain the distance matrix of those GSMs
 			# pw_dist.append(dist_mt[ctrl_idx,:][:,pert_idx].mean())
-			# cnd_pw.append((ctrl, pert))
+			# Use Ward's Method to measure the cluster distance
+			num_ctrl, num_pert = len(ctrl), len(pert)
+			pw_dist.append(1.0 * (num_ctrl * num_pert) / (num_ctrl + num_pert) * (np.linalg.norm(gsm_X.loc[ctrl].mean(axis=0) - gsm_X.loc[pert].mean(axis=0))))
+			cnd_pw.append((ctrl, pert))
 		# Find a cut value for filtering
-		# hist, bin_edges = np.histogram(pw_dist)
-		# weird_val_idx = len(hist) - 1 - np.abs(hist[-1:0:-1] - hist[-2::-1]).argmax()
-		# cut_val = (bin_edges[weird_val_idx] + bin_edges[weird_val_idx + 1]) / 2
-		# for dist, pw in zip(pw_dist, cnd_pw):
-			# if (dist > cut_val): continue
-			# geo_ids.append(gse_id)
-			# ctrl, pert = pw
-			# ctrl_ids.append('|'.join(sorted(ctrl)))
-			# pert_ids.append('|'.join(sorted(pert)))
-		for ctrl, pert in itertools.product(cpclts[0], cpclts[1]):
-			geo_ids.append(gse_id)
-			ctrl_ids.append('|'.join(sorted(ctrl)))
-			pert_ids.append('|'.join(sorted(pert)))
-	# Write to file
-	pair_df = pd.DataFrame.from_items([('geo_id', geo_ids), ('ctrl_ids', ctrl_ids), ('pert_ids', pert_ids)])
-	print 'Generated %i signatures' % pair_df.shape[0]
-	io.write_df(pair_df, cachef, with_idx=True)
-	pair_df.to_excel(fname + '.xlsx', encoding='utf8')
-	return pair_df
+		hist, bin_edges = np.histogram(pw_dist)
+		weird_val_idx = len(hist) - 1 - np.abs(hist[-1:0:-1] - hist[-2::-1]).argmax()
+		cut_val = (bin_edges[weird_val_idx] + bin_edges[weird_val_idx + 1]) / 2
+		
+		if (iterative):
+			geo_ids, ctrl_ids, pert_ids = [[] for x in range(3)]
+			for ctrl, pert in itertools.product(cpclts[0], cpclts[1]):
+				geo_ids.append(gse_id)
+				ctrl_ids.append('|'.join(sorted(ctrl)))
+				pert_ids.append('|'.join(sorted(pert)))
+			# Iterative write to file
+			pair_df = pd.DataFrame.from_items([('geo_id', geo_ids), ('ctrl_ids', ctrl_ids), ('pert_ids', pert_ids)])
+			print 'Generated %i signatures in %s' % (pair_df.shape[0], gse_id)
+			pair_df.to_csv(fname + '.csv', header=first_pass, index=False, mode='a', encoding='utf8')
+			first_pass = False
+			del geo_ids, ctrl_ids, pert_ids
+		else:
+			for dist, pw in zip(pw_dist, cnd_pw):
+				if (dist > cut_val): continue
+				geo_ids.append(gse_id)
+				ctrl, pert = pw
+				ctrl_ids.append('|'.join(sorted(ctrl)))
+				pert_ids.append('|'.join(sorted(pert)))
+		del pw_dist, cnd_pw
+
+	if (iterative):
+		return None
+	else:
+		# Write to file
+		pair_df = pd.DataFrame.from_items([('geo_id', geo_ids), ('ctrl_ids', ctrl_ids), ('pert_ids', pert_ids)])
+		print 'Generated %i signatures' % pair_df.shape[0]
+		io.write_df(pair_df, cachef, with_idx=True)
+		pair_df.to_excel(fname + '.xlsx', encoding='utf8')
+		return pair_df
 	
 
 # For soft and hard clustering method
@@ -414,6 +444,7 @@ def gen_gsmfzclt_pair():
 		Xs, Ys, labels = gsc.get_data(None, type='gsm', from_file=True, fmt=opts.fmt, spfmt=opts.spfmt)
 	else:
 		Xs, Ys, labels = gsc.get_mltl_npz(type='gsm', lbs=[opts.pid], spfmt=opts.spfmt)
+	gsmclt_pairs = {}
 	m2e = io.read_df(os.path.join(gsc.DATA_PATH, 'gsm2gse.npz'), with_idx=True)
 	lbids = range(len(Xs)) if (opts.pid == -1) else [opts.pid]
 	pred_dfs = _cltpred2df(Xs, Ys, labels, lbids, predf_patn)
@@ -421,7 +452,9 @@ def gen_gsmfzclt_pair():
 		lbid = i if (opts.pid == -1) else opts.pid
 		for fname, pred_df in predfs:
 			# Generate GSM cluster pairs
-			pair_df = _gsmclt_pair(X, Y, pred_df, m2e, lbid, thrshd=threshold, cache_path=opts.cache)
+			gsmclt_pair = _gsmclt_pair(X, Y, pred_df, m2e, lbid, thrshd=threshold, cache_path=opts.cache, n_jobs=opts.np)
+			gsmclt_pairs.setdefault(fname.split('_')[2], []).append(gsmclt_pair)
+	return gsmclt_pairs
 			
 			
 def _annot_sgn(geo_id, geo_doc, txt_fields, cache_path='.cache'):
@@ -498,13 +531,17 @@ def sgn2ge():
 	sample_path = os.path.join(gsc.GEO_PATH, opts.type, basename, 'samples')
 	saved_path = os.path.join(par_dir, 'gedata', basename) if opts.output is None else os.path.join(opts.output, basename)
 	# Find the control group and perturbation group for every signature
-	_sgn2ge(sgn_df, sample_path, saved_path, fmt=opts.type)
+	if (opts.np == 1):
+		_sgn2ge(sgn_df, sample_path, saved_path, fmt=opts.type)
+	else:
+		task_bnd = njobs.split_1d(sgn_df.shape[0], split_num=opts.np, ret_idx=True)
+		_ = njobs.run_pool(_sgn2ge, n_jobs=opts.np, dist_param=['sgn_df'], sgn_df=[sgn_df.iloc[task_bnd[i]:task_bnd[i+1]] for i in range(opts.np)], sample_path=sample_path, saved_path=saved_path, fmt=opts.type)
 
 
 def _sgn2dge(sgn_df, method, ge_path, saved_path, cache_path):
 	from bioinfo.ext import chdir, limma
 	_method = method.lower()
-	ids = sgn_df['id'] if hasattr(sgn_df, 'id') else sgn_df.index
+	sids = sgn_df['id'] if hasattr(sgn_df, 'id') else sgn_df.index
 	dge_dfs = []
 	for sid in sids:
 		dge_file = os.path.join(saved_path, 'dge_%s.npz' % sid)
@@ -603,7 +640,7 @@ def plot_dgepval():
 			pvalues.append(selected_pvalue)
 		data_col = np.concatenate(pvalues)
 		label_col = np.repeat([label], data_col.shape[0])
-		data.append(np.stack([label_col, data_col]))
+		data.append(np.stack([label_col, data_col], axis=1))
 	plot.plot_violin(data, xlabel='GEO Collection', ylabel='-log10(P-Value)', labels=group_labels, groups=groups, ref_lines={'y':[-np.log10(0.05)]}, plot_cfg=plot_common_cfg, log=-1, sns_inner='box', sns_bw=.3)
 
 
@@ -1630,10 +1667,16 @@ def plot_sampclt(with_cns=False):
 		# 'GSM155564|GSM155565|GSM155566|GSM155567',
 		# 'GSM155568|GSM155569|GSM155570|GSM155571|GSM155572|GSM155573|GSM155574',
 		# 'GSM155592|GSM155593|GSM155594|GSM155595',
-		'GSM684691|GSM684692|GSM684693',
-		'GSM684688|GSM684689|GSM684690',
-		'GSM684685|GSM684686|GSM684687',
-		'GSM684682|GSM684683|GSM684684'
+		'GSM29441|GSM29442',
+		'GSM29437|GSM29438',
+		'GSM29297|GSM29298',
+		'GSM29270|GSM29271',
+		'GSM29289|GSM29290|GSM29305|GSM29306',
+		'GSM29262|GSM29263|GSM29264|GSM29265|GSM39415|GSM39416',
+		# 'GSM684691|GSM684692|GSM684693',
+		# 'GSM684688|GSM684689|GSM684690',
+		# 'GSM684685|GSM684686|GSM684687',
+		# 'GSM684682|GSM684683|GSM684684'
 		],
 		1:[
 		# 'GSM271362|GSM271365|GSM271367|GSM271369', 
@@ -1906,7 +1949,7 @@ def plot_circos(**kw_args):
 	ro.r.assign('unq_celltype_col', [ctcmap[x] for x in unq_celltype])
 	# ro.r('unq_celltype_col <- celltype_colors[unlist(unq_celltype)]')
 	# ro.r('unq_celltype_col <- celltype_colors[!is.na(celltype_colors)]')
-	ro.r('print(unq_celltype_col)')
+	# ro.r('print(unq_celltype_col)')
 	io.inst_print('Finish preparing the data for the fourth track...')
 	# Prepare the data for the fifth track, signature density (deprecated)
 	sgn_subidx = pd.Series(np.zeros(data.shape[0]), index=data['subject'])

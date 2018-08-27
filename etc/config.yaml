@@ -30,6 +30,16 @@ bionlp.spider.gsc:
     BIOGRID_PATH:
     HGNC_PATH:
     DNORM_PATH:
+    
+bionlp.spider.nihgene:
+- function: init
+  params:
+    GENE_PATH:
+  
+bioinfo.spider.nihnuccore:
+- function: init
+  params:
+    GENE_PATH:
 
 bionlp.spider.hgnc:
 - function: init
@@ -91,15 +101,15 @@ bionlp.txtclf:
 bionlp.txtclt:
 - function: cross_validate
   params:
-    save_crsval_idx: False
-    save_crsval_pred: False
+    save_crsval_idx: True
+    save_crsval_pred: True
     save_perf_avg: True
     save_perf_avg_npz: False
     save_perf_std: False
     save_perf_std_npz: False
-    save_povl: True
+    save_povl: False
     save_povl_npz: False
-    save_spmnr_avg: True
+    save_spmnr_avg: False
     save_spmnr_avg_npz: False
     save_spmnr_pval: False
     save_spmnr_pval_npz: False
@@ -118,7 +128,7 @@ bionlp.txtclt:
     save_pred: True
     save_povl: True
     save_povl_npz: False
-    save_spmnr: True
+    save_spmnr: False
     save_spmnr_npz: False
     save_spmnr_pval: False
     save_spmnr_pval_npz: False
