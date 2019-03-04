@@ -786,7 +786,6 @@ def _sjiv(X, Y):
 # Signed Binary Jaccard index cube-mode
 def _sjic(X, Y):
 	import numpy as np
-	Y_T = Y.T
 	interaction = np.tensordot(X, Y, axes=[[-1],[-1]]).transpose(range(len(X.shape)-1)+range(len(X.shape)-1, len(X.shape)+len(Y.shape)-2)[::-1]) # XY' shape of (m, 2, 2, n)
 	union = np.tensordot(X, np.ones((X.shape[-1], X.shape[-2])), axes=1).reshape(X.shape[:-1] + (X.shape[-2], 1)).repeat(Y.shape[0], axis=-1) + np.tensordot(Y, np.ones((Y.shape[-1], Y.shape[-2])), axes=1).reshape(Y.shape[:-1] + (Y.shape[-2], 1)).repeat(X.shape[0], axis=-1).T - interaction # XI+IY'-XY'
 	r = 1.0 * interaction / union
