@@ -46,7 +46,7 @@ from sklearn.metrics.pairwise import pairwise_distances
 from keras.utils.io_utils import HDF5Matrix
 
 from bionlp.spider import geoxml as geo, annot, hgnc, dnorm, rxnav, sparql
-# from bionlp.model.fzcmeans import FZCMeans, CNSFZCMeans
+from bionlp.model.fzcmeans import FZCMeans, CNSFZCMeans
 from bionlp.model.lda import LDACluster
 from bionlp.model import kerasext, kallima
 from bionlp.util import fs, io, func, ontology
@@ -389,7 +389,8 @@ def gen_cbclt_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 		# ('CNZ-HDBSCAN', Pipeline([('distcalc', dstclc.gen_dstclc(dstclc.cns_dist, kw_args={'metric':'euclidean', 'C':kwargs.setdefault('constraint', None), 'a':0.4, 'n_jobs':opts.np})), ('clt', hdbscan.HDBSCAN(min_cluster_size=2, metric='precomputed', n_jobs=opts.np))])),
 		# ('ManhCNZ-DBSCAN', Pipeline([('distcalc', dstclc.gen_dstclc(dstclc.cns_dist, kw_args={'metric':'manhattan', 'C':kwargs.setdefault('constraint', None), 'a':0.4, 'n_jobs':opts.np})), ('clt', DBSCAN(metric='precomputed', n_jobs=opts.np))])),
 		# ('ManhCNZ-HDBSCAN', Pipeline([('distcalc', dstclc.gen_dstclc(dstclc.cns_dist, kw_args={'metric':'manhattan', 'C':kwargs.setdefault('constraint', None), 'a':0.4, 'n_jobs':opts.np})), ('clt', hdbscan.HDBSCAN(min_cluster_size=2, metric='precomputed', n_jobs=opts.np))])),
-		('Kallima', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.5), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, distmt=kwargs.setdefault('distmt', None), n_jobs=opts.np))])),
+		# ('Kallima', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.5), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, distmt=kwargs.setdefault('distmt', None), n_jobs=opts.np))])),
+		('Kallima', Pipeline([('clt', txtclt.DummyCluster(output='clt_pred_kallima_%i.npz' % opts.pid))])),
 		# ('Kallima-a-0_4', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.4), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
 		# ('Kallima-a-0_3', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.3), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
 		# ('Kallima-a-0_6', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.6), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.3), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
@@ -402,15 +403,15 @@ def gen_cbclt_models(tuned=False, glb_filtnames=[], glb_clfnames=[], **kwargs):
 		# ('Kallima-ph-0_1', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.1), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
 		# ('Kallima-ph-0_4', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.4), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
 		# ('Kallima-ph-0_5', Pipeline([('clt', kallima.Kallima(metric='euclidean', method='mstcut', cut_method='normcut', cut_step=0.01, cns_ratio=kwargs.setdefault('cns_ratio', 0.5), nn_method='rnn', nn_param=0.5, max_cltnum=1500, coarse=kwargs.setdefault('coarse', 0.4), rcexp=1, cond=kwargs.setdefault('cond', 0.5), cross_merge=False, merge_all=False, save_g=True, n_jobs=opts.np))])),
-		# ('Manh-DBSCAN', Pipeline([('clt', DBSCAN(metric='manhattan', algorithm='ball_tree', n_jobs=opts.np))])),
-		# ('FuzzyCmeans', Pipeline([('clt', FZCMeans(n_clusters=1500, random_state=0))])),
+		('Manh-DBSCAN', Pipeline([('clt', DBSCAN(metric='manhattan', algorithm='ball_tree', n_jobs=opts.np))])),
+		('FuzzyCmeans', Pipeline([('clt', FZCMeans(n_clusters=1500, random_state=0))])),
 		# ('CNSFuzzyCmeans', Pipeline([('clt', CNSFZCMeans(n_clusters=1500, a=0.4, random_state=0, n_jobs=opts.np))])),
 		# ('LDA', Pipeline([('clt', LDACluster(n_clusters=1500, learning_method='online', learning_offset=50., max_iter=5, n_jobs=opts.np, random_state=0))])),
 	]:
 		yield mdl_name, mdl
 		
 		
-# Models with parameter range
+# DNN Models with parameter range
 def gen_nnmdl_params(input_dim, output_dim, rdtune=False):
 	common_cfg = cfgr('gsx_extrc', 'common')
 	pr = io.param_reader(os.path.join(PAR_DIR, 'etc', '%s.yaml' % common_cfg.setdefault('mdl_cfg', 'mdlcfg')))
@@ -704,8 +705,8 @@ def gsm_clt():
 			distmt = None
 		model_param = dict(tuned=opts.best, glb_filtnames=filt_names, glb_cltnames=clt_names, is_fuzzy=opts.fuzzy, is_nn=False if opts.dend is None else True, constraint=c, distmt=distmt)
 		global_param = dict(comb=opts.comb, pl_names=pl_names, pl_set=pl_set)
-		# txtclt.cross_validate(X, y, model_iter, model_param, kfold=opts.kfold, cfg_param=cfgr('bionlp.txtclt', 'cross_validate'), global_param=global_param, lbid=pid)
-		txtclt.clustering(X, model_iter, model_param, cfg_param=cfgr('bionlp.txtclt', 'clustering'), global_param=global_param, lbid=pid)
+		txtclt.cross_validate(X, y, model_iter, model_param, kfold=opts.kfold, cfg_param=cfgr('bionlp.txtclt', 'cross_validate'), global_param=global_param, lbid=pid)
+		# txtclt.clustering(X, model_iter, model_param, cfg_param=cfgr('bionlp.txtclt', 'clustering'), global_param=global_param, lbid=pid)
 
 		
 def _filt_ent(entities, onto_lb):
@@ -1399,13 +1400,14 @@ if __name__ == '__main__':
 	op.add_option('-u', '--fuzzy', action='store_true', dest='fuzzy', default=False, help='use fuzzy clustering')
 	op.add_option('-j', '--thrshd', default='mean', type='str', dest='thrshd', help='threshold value')
 	op.add_option('-w', '--cache', default='.cache', help='the location of cache files')
-	op.add_option('-x', '--maxt', default=32, action='store', type='int', dest='maxt', help='indicate the maximum number of trials')
+	op.add_option('-y', '--maxt', default=32, action='store', type='int', dest='maxt', help='indicate the maximum number of trials')
 	op.add_option('-d', '--dend', dest='dend', help='deep learning backend: tf or th')
 	op.add_option('-z', '--bsize', default=32, action='store', type='int', dest='bsize', help='indicate the batch size used in deep learning')
 	op.add_option('-o', '--omp', action='store_true', dest='omp', default=False, help='use openmp multi-thread')
 	op.add_option('-g', '--gpunum', default=1, action='store', type='int', dest='gpunum', help='indicate the gpu device number')
 	op.add_option('-q', '--gpuq', dest='gpuq', help='prefered gpu device queue')
 	op.add_option('-i', '--input', default='gsc', help='input source: gsc or geo [default: %default]')
+	op.add_option('-x', '--pred', action='store_true', dest='pred', default=False, help='train the model and make predictions without cross-validation')
 	op.add_option('-m', '--method', help='main method to run')
 	op.add_option('-v', '--verbose', action='store_true', dest='verbose', default=False, help='display detailed information')
 
