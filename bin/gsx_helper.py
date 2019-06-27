@@ -30,7 +30,7 @@ import networkx as nx
 from sklearn.metrics.pairwise import pairwise_distances as pdist
 
 from bioinfo.spider import nihnuccore
-from bionlp.spider import annot, sparql, nihgene
+from bionlp.spider import becas, sparql, nihgene
 from bionlp.util import fs, io, func, plot, ontology, shell, njobs, sampling
 from bionlp import dstclc, nlp, metric
 # from bionlp import txtclt
@@ -54,14 +54,14 @@ def init_plot(plot_cfg={}, plot_common={}):
 	if (len(plot_common) > 0):
 		plot_common_cfg = plot_common
 
-		
+
 def fuseki(sh='bash'):
 	common_cfg = cfgr('gsx_helper', 'common')
 	proc_cmd = ' && '.join([common_cfg['FUSEKI_ENV'], '%s --port=8890 --config=$FUSEKI_HOME/run/config.ttl >/var/log/fuseki.log 2>&1 &' % 'fuseki-server' if common_cfg['FUSEKI_PATH'] is None or common_cfg['FUSEKI_PATH'].isspace() else os.path.join(common_cfg['FUSEKI_PATH'], 'fuseki-server')])
 	cmd = proc_cmd if sh == 'sh' else '%s -c "%s"' % (sh, proc_cmd)
 	shell.daemon(cmd, 'fuseki-server')
-	
-	
+
+
 def npzs2yaml(dir_path='.', mdl_t='Classifier'):
 	pw = io.param_writer(os.path.join(dir_path, 'mdlcfg'))
 	for file in fs.listf(dir_path):
@@ -87,15 +87,15 @@ def xml2db():
 	import bionlp.util.ontology as ontology
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	ontology.files2db(opts.loc, saved_path=os.path.splitext(opts.loc)[0] if opts.output is None else opts.output, **kwargs)
-	
-	
+
+
 def xml2dbs():
 	import bionlp.util.ontology as ontology
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	ontology.files2dbs(opts.loc, saved_path=os.path.splitext(opts.loc)[0] if opts.output is None else opts.output, merge=True, merged_dbname=os.path.splitext(os.path.basename(opts.loc))[0], cache=True, **kwargs)
 	# ontology.files2dbs([os.path.join(opts.loc, x) for x in ['dron-full.owl', 'dron-ingredient.owl', 'dron-hand.owl', 'dron-ndc.owl', 'dron-chebi.owl', 'dron-pro.owl', 'dron-upper.owl', 'dron-rxnorm.owl']], saved_path=os.path.splitext(opts.loc)[0] if opts.output is None else opts.output, merge=True, merged_dbname=os.path.splitext(os.path.basename(opts.loc))[0], cache=True, **kwargs)
-	
-	
+
+
 def dbcsv2nt():
 	data_df = pd.read_csv(opts.loc, encoding='utf-8').fillna('')
 	dbid_tmplt, name_tmplt = u'<http://www.drugbank.ca/drugbank-id/%s>', u'"%s"@en'
@@ -107,8 +107,8 @@ def dbcsv2nt():
 	triples = dict.fromkeys(triples).keys()
 	fpath = opts.output if opts.output is not None else os.path.splitext(opts.loc)[0] + '.nt'
 	fs.write_file(' .\n'.join([' '.join(x) for x in triples]) + ' .', fpath, code='utf-8')
-	
-	
+
+
 def dgcsv2nt():
 	data_df = pd.read_csv(opts.loc, encoding='utf-8').fillna('')
 	gene_tmplt, intype_tmplt, drug_tmplt = u'<http://dgidb.genome.wustl.edu/gene/%s>', u'<http://dgidb.genome.wustl.edu/vocab#%s>', u'<http://dgidb.genome.wustl.edu/drug/%s>'
@@ -239,7 +239,7 @@ def _gpl2map(gpl_fpaths, fmt='xml'):
 		probe_gene.append((doc['id'], genes))
 	return probe_gene
 
-	
+
 def gpl2map(fmt='xml'):
 	labels = gsc.LABEL2ID.keys()
 	if (opts.pid != -1):
@@ -262,7 +262,7 @@ def gpl2map(fmt='xml'):
 		io.write_obj(probe_gene_map, os.path.join(platform_path, 'probe_gene_map.pkl'))
 		io.inst_print('Finish saving to disk!')
 
-	
+
 def _cltpred2df(Xs, Ys, labels, lbids, predf_patn):
 	pred_dfs = []
 	for X, Y, z, i in zip(Xs, Ys, labels, lbids):
@@ -282,14 +282,14 @@ def _cltpred2df(Xs, Ys, labels, lbids, predf_patn):
 			predf_list.append((os.path.splitext(os.path.basename(fpath))[0], pred_df))
 		pred_dfs.append(predf_list)
 	return pred_dfs
-	
-	
+
+
 def cltpred2df():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	predf_patn = kwargs.setdefault('predf', 'clt_pred_.*_#LB')
 	Xs, Ys, labels = gsc.get_data(None, type='gsm', from_file=True, fmt=opts.fmt, spfmt=opts.spfmt)
 	_cltpred2df(Xs, Ys, labels, range(len(Xs)), predf_patn)
-	
+
 
 # For hard clustering method
 def gen_gsmclt_pair():
@@ -403,7 +403,7 @@ def _gsmclt_pair(X, Y, z, gsm2gse, lbid, thrshd=0.5, iterative=False, cache_path
 		hist, bin_edges = np.histogram(pw_dist)
 		weird_val_idx = len(hist) - 1 - np.abs(hist[-1:0:-1] - hist[-2::-1]).argmax()
 		cut_val = (bin_edges[weird_val_idx] + bin_edges[weird_val_idx + 1]) / 2
-		
+
 		if (iterative):
 			geo_ids, ctrl_ids, pert_ids = [[] for x in range(3)]
 			for ctrl, pert in itertools.product(cpclts[0], cpclts[1]):
@@ -434,7 +434,7 @@ def _gsmclt_pair(X, Y, z, gsm2gse, lbid, thrshd=0.5, iterative=False, cache_path
 		io.write_df(pair_df, cachef, with_idx=True)
 		pair_df.to_excel(fname + '.xlsx', encoding='utf8')
 		return pair_df
-	
+
 
 # For soft and hard clustering method
 def gen_gsmfzclt_pair():
@@ -455,8 +455,8 @@ def gen_gsmfzclt_pair():
 			gsmclt_pair = _gsmclt_pair(X, Y, pred_df, m2e, lbid, thrshd=threshold, cache_path=opts.cache, n_jobs=opts.np)
 			gsmclt_pairs.setdefault(fname.split('_')[2], []).append(gsmclt_pair)
 	return gsmclt_pairs
-			
-			
+
+
 def _annot_sgn(geo_id, geo_doc, txt_fields, cache_path='.cache'):
 	fs.mkdir(cache_path)
 	# Obtain the annotation results that correspond to each field
@@ -464,7 +464,7 @@ def _annot_sgn(geo_id, geo_doc, txt_fields, cache_path='.cache'):
 	doc_cachef = os.path.join(cache_path, '%s.pkl' % geo_id)
 	if (os.path.exists(doc_cachef)):
 		cached_res = io.read_obj(doc_cachef)
-		if (len(cached_res) != 0): 
+		if (len(cached_res) != 0):
 			return cached_res
 	for field in txt_fields:
 		# Retrieve the annotated data in dict format
@@ -474,7 +474,7 @@ def _annot_sgn(geo_id, geo_doc, txt_fields, cache_path='.cache'):
 			ret_dict = json.loads(json_str)
 		else:
 			try:
-				ret_dict = annot.annotext(geo_doc[field], retype='dict')
+				ret_dict = becas.annotext(geo_doc[field], retype='dict')
 			except Exception as e:
 				print 'Unable to annotate %s in the %s field!' % (geo_id, field)
 				print e
@@ -483,12 +483,12 @@ def _annot_sgn(geo_id, geo_doc, txt_fields, cache_path='.cache'):
 			fs.write_file(json_str, field_cachef, code='utf8')
 		# Transform the data into groups
 		ret_dict['text'] = geo_doc[field]
-		annot_res.append(annot.annotext(ret_dict, retype='group', with_mdf=True if (field=='source') else False))
+		annot_res.append(becas.annotext(ret_dict, retype='group', with_mdf=True if (field=='source') else False))
 	io.write_obj(annot_res, doc_cachef)
 	# Return the groups for each text fields
 	return annot_res
-	
-	
+
+
 def annot_sgn():
 	cache_path = os.path.join(gsc.GEO_PATH, 'annot')
 	txt_field_set = [['title', 'summary', 'keywords'], ['title', 'description', 'source', 'trait']]
@@ -499,7 +499,7 @@ def annot_sgn():
 	io.write_obj(annot_res_set[0], os.path.join(cache_path, 'gse_annot.pkl'))
 	io.write_obj(annot_res_set[1], os.path.join(cache_path, 'gsm_annot.pkl'))
 
-	
+
 def _sgn2ge(sgn_df, sample_path, saved_path, fmt='xml'):
 	if (fmt == 'soft'):
 		from bionlp.spider import geo
@@ -517,8 +517,8 @@ def _sgn2ge(sgn_df, sample_path, saved_path, fmt='xml'):
 		ctrl_df, pert_df = pd.concat(ctrl_ge_dfs, axis=1, join='inner').astype('float32'), pd.concat(pert_ge_dfs, axis=1, join='inner').astype('float32')
 		io.write_df(ctrl_df, ctrl_file, with_col=False, with_idx=True)
 		io.write_df(pert_df, pert_file, with_col=False, with_idx=True)
-	
-	
+
+
 def sgn2ge():
 	input_ext = os.path.splitext(opts.loc)[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
@@ -590,8 +590,8 @@ def _sgn2dge(sgn_df, method, ge_path, saved_path, cache_path):
 		io.write_df(dge_df, dge_file, with_idx=True, compress=True)
 		dge_dfs.append(dge_df)
 	return dge_dfs
-		
-		
+
+
 def sgn2dge():
 	input_ext = os.path.splitext(opts.loc)[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
@@ -621,8 +621,8 @@ def sgn2dge():
 	else:
 		task_bnd = njobs.split_1d(sgn_df.shape[0], split_num=opts.np, ret_idx=True)
 		_ = njobs.run_pool(_sgn2dge, n_jobs=opts.np, dist_param=['sgn_df'], sgn_df=[sgn_df.iloc[task_bnd[i]:task_bnd[i+1]] for i in range(opts.np)], method=method, ge_path=ge_path, saved_path=saved_path, cache_path=cache_path)
-	
-	
+
+
 def plot_dgepval():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	dge_dirs, labels, numsamp = kwargs['dges'].split(SC), kwargs['labels'].split(SC), kwargs.setdefault('numsamp', 10)
@@ -656,7 +656,7 @@ def _dge2udrg(sgn_dge_fpaths, sgn_df, probe_gene_map, keep_unkown_probe=False, h
             pgmap = probe_gene_map[plfm]
             columns = [col for col in sgn_dge.columns if col in pgmap.index and pgmap.loc[col] and not pgmap.loc[col].isspace()]
             sgn_dge = sgn_dge[columns]
-        
+
         hist, bin_edges = zip(*[np.histogram(sgn_dge.iloc[i]) for i in range(sgn_dge.shape[0])])
         uprg = [sgn_dge.iloc[i, np.where(sgn_dge.iloc[i] >= bin_edges[i][hist_bnd[0]])[0]].sort_values(ascending=False) for i in range(sgn_dge.shape[0])]
         dwrg = [sgn_dge.iloc[i, np.where(sgn_dge.iloc[i] <= bin_edges[i][hist_bnd[1]])[0]].sort_values(ascending=True) for i in range(sgn_dge.shape[0])]
@@ -678,7 +678,7 @@ def _dge2udrg(sgn_dge_fpaths, sgn_df, probe_gene_map, keep_unkown_probe=False, h
             dwr_dges = [func.flatten_list(dges) for dges in dwr_dges]
         udr_genes.append(pd.DataFrame(OrderedDict([('Up-regulated Genes', ['|'.join(map(str, x)) for x in upr_genes]), ('Down-regulated Genes', ['|'.join(map(str, x)) for x in dwr_genes]), ('Up-regulated DGEs', ['|'.join(map(str, x)) for x in upr_dges]), ('Down-regulated DGEs', ['|'.join(map(str, x)) for x in dwr_dges])]), index=sgn_dge.index))
     return pd.concat(udr_genes, axis=0, join='inner')
-		
+
 
 def dge2udrg():
 	input_ext = os.path.splitext(opts.loc)[1]
@@ -699,7 +699,7 @@ def dge2udrg():
 	idx_sgn_df = sgn_df.set_index('id')
 	probe_gene_map = io.read_obj(os.path.join(pgmap_dir, 'probe_gene_map.pkl'))
 	sgn_dge_fpaths = fs.listf(dge_dir, pattern='dge_X_.*\.npz', full_path=True)
-	
+
 	task_bnd = njobs.split_1d(len(sgn_dge_fpaths), split_num=opts.np, ret_idx=True)
 	udr_genes = njobs.run_pool(_dge2udrg, n_jobs=opts.np, dist_param=['sgn_dge_fpaths'], sgn_dge_fpaths=[sgn_dge_fpaths[task_bnd[i]:task_bnd[i+1]] for i in range(opts.np)], sgn_df=idx_sgn_df, probe_gene_map=probe_gene_map, keep_unkown_probe=keep_unkown_probe)
 	new_sgn_df = pd.concat([idx_sgn_df, pd.concat(udr_genes, axis=0, join='inner')], axis=1, join_axes=[idx_sgn_df.index])
@@ -715,7 +715,7 @@ def _ji(a, b):
 	if (a_sum == 0 and b_sum == 0): return 1
 	ab_sum = (a & b).sum()
 	return 1.0 * ab_sum / (a_sum + b_sum - ab_sum)
-	
+
 # Weighted Jaccard index
 def _wji(a, b):
 	max_sum = np.max((a,b), axis=0).sum()
@@ -726,7 +726,7 @@ def _wji(a, b):
 # Binary Spearman's Footrule
 def _sf(a, b):
 	return 1 - np.abs(a - b).sum() / np.abs(2 * a - len(a) - 1).sum()
-	
+
 # Binary Kendall's Tau
 def _kt(a, b):
 	return 1 - np.logical_xor([m < n for m, n in itertools.combinations(a, 2)], [m < n for m, n in itertools.combinations(b, 2)]).astype('int8').sum() / sp.misc.comb(len(a), 2)
@@ -757,11 +757,11 @@ def _ssf(a, b):
 # Signed weighted Jaccard index
 def _swji(a, b):
 	return (_wji(a[0], b[0]) + _wji(a[1], b[1]) - _wji(a[0], b[1]) - _wji(a[1], b[0])) / 2
-	
+
 # Signed Weighted Spearman's Footrule
 def _swsf(a, b, wfunc='iota'):
 	return (_wsf(a[0], b[0], wfunc=wfunc) + _wsf(a[1], b[1], wfunc=wfunc) - _wsf(a[0], b[1], wfunc=wfunc) - _wsf(a[1], b[0], wfunc=wfunc)) / 2
-	
+
 # Signed Weighted Kendall's Tau
 def _swkt(a, b, wfunc='iota'):
 	return (_wkt(a[0], b[0], wfunc=wfunc) + _wkt(a[1], b[1], wfunc=wfunc) - _wkt(a[0], b[1], wfunc=wfunc) - _wkt(a[1], b[0], wfunc=wfunc)) / 2
@@ -845,7 +845,7 @@ def _wjim_t(X, Y, signed=True):
 	for i, j in itertools.product(range(shape[0]), range(shape[1])):
 		simmt[i, j] = _swji([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]])
 	return simmt
-	
+
 # Weighted Spearman's Footrule matrix-mode
 def _wsfm(X, Y, signed=True, wfunc='iota'):
 	import numpy as np
@@ -886,7 +886,7 @@ def _wsfm_t(X, Y, signed=True, wfunc='iota'):
 	for i, j in itertools.product(range(shape[0]), range(shape[1])):
 		simmt[i, j] = _swsf([X[2*i], X[2*i+1]], [Y[2*j], Y[2*j+1]], wfunc=wfunc)
 	return simmt
-	
+
 # Weighted Kendall's Tau matrix-mode
 def _wktm(X, Y, signed=True, wfunc='iota'):
 	import numpy as np
@@ -990,7 +990,7 @@ def _iter_2d_mltp(X, Y, method, signed=True, ramsize=1, task_size_f=lambda X: 10
 	else:
 		njobs.run_pool(None, pool=pool, ret_pool=False)
 	return sp.sparse.vstack(task_results).toarray().reshape(shape)
-	
+
 _sim_method = {'ji':_jim, 'wji':_wjim, 'wsf':_wsfm, 'wkt':_wktm}
 BYTE_OF_FLOAT32, DIM_OF_SGN = 4, 2
 _task_size_1d = {'ji':lambda X: BYTE_OF_FLOAT32*(3*DIM_OF_SGN*X.shape[0]*X.shape[1]), 'wji':lambda X: BYTE_OF_FLOAT32*(6*DIM_OF_SGN*X.shape[0]*X.shape[1]), 'wsf':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*X.shape[0]*X.shape[1]), 'wkt':lambda X: BYTE_OF_FLOAT32*(12*DIM_OF_SGN*X.shape[0]*X.shape[1]+12*DIM_OF_SGN*X.shape[0]*sp.misc.comb(X.shape[1], 2))}
@@ -1022,7 +1022,7 @@ def dge2simmt(**kw_args):
 	weighted = True if (int(kwargs.setdefault('weighted', 1)) == 1) else False
 	if (weighted): assert(sim_method.startswith('w'))
 	sim_kwargs = {}
-	if ('sf' in sim_method): 
+	if ('sf' in sim_method):
 		sim_kwargs['wfunc'] = kwargs.setdefault('wfunc', 'iota')
 	# Read the data
 	print 'Differentially expressed genes are calculated by %s...' % method
@@ -1087,7 +1087,7 @@ def dge2simmt(**kw_args):
 			# similarity = _sji(udgene[i], udgene[j])
 			# simmt.iloc[i, j] = similarity
 			# simmt.iloc[j, i] = similarity
-		
+
 		# Deal with weighted data
 		if (weighted):
 			udgene_mt = sp.sparse.csr_matrix(((1 - pvalue_spmt.data) * udgene_spmt.data, udgene_spmt.indices, udgene_spmt.indptr), shape=udgene_spmt.shape).astype('float32').toarray()
@@ -1096,7 +1096,7 @@ def dge2simmt(**kw_args):
 			udgene_spmt = udgene_spmt.astype('float32') # Numpy only support parallelism for float32/64
 			udgene_mt = udgene_spmt.toarray()
 		del udgene_spmt
-		
+
 		if (opts.np > 1):
 			# Multi-processing method
 			# similarity = dstclc.parallel_pairwise(udgene_mt, None, _sim_method[sim_method], n_jobs=opts.np, min_chunksize=2)
@@ -1119,12 +1119,12 @@ def dge2simmt(**kw_args):
 		fpath = os.path.splitext(simmt_file)
 		io.write_df(sub_simmt, fpath[0] + '_%i' % k + fpath[1], with_idx=True, sparse_fmt=opts.spfmt, compress=True)
 
-		
+
 def simhrc():
 	sys.setrecursionlimit(10000)
 	simmt = io.read_df(opts.loc, with_idx=True)
 	plot.plot_clt_hrc(simmt.as_matrix(), dist_metric='precomputed', fname=os.path.splitext(os.path.basename(opts.loc))[0], plot_cfg=plot_common_cfg)
-	
+
 ## Single collection of signatures to similarity matrix
 def onto2simmt():
 	from scipy.sparse import coo_matrix
@@ -1209,7 +1209,7 @@ def ontoc2simmt():
 	sim_df = dict(values=infer_simmt, shape=infer_simmt.shape, index=simmts[0]['index'], columns=simmts[1]['index'])
 	fname = 'simmt_%s.npz' % '-'.join([bn.split('-')[0].strip('simmt_') for bn in basenames])
 	io.write_spdf(sim_df, fname, with_idx=True, sparse_fmt=opts.spfmt, compress=True)
-	
+
 
 def ddi2simmt():
 	from bionlp.spider import rxnav
@@ -1319,7 +1319,7 @@ def ddi2simmt():
 	sim_df = pd.DataFrame(simmt.toarray(), index=drugs, columns=drugs)
 	io.write_df(sim_df, 'simmt_drug_%s.npz' % col_name, with_idx=True, sparse_fmt=opts.spfmt, compress=True)
 
-	
+
 def ppi2simmt():
 	from bionlp.spider import biogrid
 	from scipy.sparse import coo_matrix
@@ -1413,8 +1413,8 @@ def ppi2simmt():
 	# Reset the relation between the synonym and the official symbol to 1
 	sim_df[sim_df==2] = 1
 	io.write_df(sim_df, 'simmt_gene_%s.npz' % col_name, with_idx=True, sparse_fmt=opts.spfmt, compress=True)
-	
-	
+
+
 def sgn_overlap():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	sgn_files, cmp_sgn_files = kwargs['sgns'].split(SC), kwargs['cmp_sgn'].split(SC)
@@ -1472,7 +1472,7 @@ def sgn_eval():
 	plot.plot_roc(roc_data, roc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='roc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=plot_common_cfg)
 	# plot.plot_prc(prc_data, prc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='prc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=plot_common_cfg)
 
-	
+
 def cross_sgn_eval():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	sgn_dfs, true_simmt = [pd.read_csv(os.path.join(opts.loc, fname)) for fname in kwargs['sgns'].split(SC)], io.read_spdf(kwargs['truesim'], with_idx=True, sparse_fmt=opts.spfmt)
@@ -1519,8 +1519,8 @@ def cross_sgn_eval():
 	# Plot the figures
 	plot.plot_roc(roc_data, roc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='roc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=plot_common_cfg)
 	# plot.plot_prc(prc_data, prc_labels, groups=[(x, x+1) for x in range(0, len(roc_data), 2)], mltl_ls=True, fname='prc_%s' % truesim_lb.lower().replace(' ', '_'), plot_cfg=plot_common_cfg)
-	
-	
+
+
 def cmp2sim():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	sim0_df, sim1_df = io.read_df(os.path.join(opts.loc, kwargs['sim0']), with_idx=True, sparse_fmt=opts.spfmt), io.read_df(os.path.join(opts.loc, kwargs['sim1']), with_idx=True, sparse_fmt=opts.spfmt)
@@ -1534,8 +1534,8 @@ def cmp2sim():
 	roc_labels = ['%s (AUC=%0.2f)' % (sim1_lb, roc_auc)]
 	roc_data = [[mean_fpr, mean_tpr]]
 	plot.plot_roc(roc_data, roc_labels, fname='roc_%s_' % (sim0_lb, sim1_l), plot_cfg=plot_common_cfg)
-	
-	
+
+
 def cmp_sim_list():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	excel_path, col_name, db_name, sim_lb, rankl_lb = kwargs['excel_path'], kwargs['col_name'], kwargs['db_name'], kwargs['sim_lb'], kwargs['rankl_lb']
@@ -1553,8 +1553,8 @@ def cmp_sim_list():
 	roc_labels = ['%s (AUC=%0.2f)' % (sim_lb, roc_auc)]
 	roc_data = [[fpr, tpr]]
 	plot.plot_roc(roc_data, roc_labels, fname='roc_%s_%s' % (sim_lb, rankl_lb), plot_cfg=plot_common_cfg)
-	
-	
+
+
 def simmt2gml():
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
 	simmt = io.read_spdf(kwargs['simmt'], with_idx=True, sparse_fmt=opts.spfmt)
@@ -1566,8 +1566,8 @@ def simmt2gml():
 	G.add_nodes_from([(idx,dict(subj='' if id2subj[idx] is np.nan else id2subj[idx], subj_type=np.where(gse_Y.loc[id2gse[idx]]==1)[0][0].item())) for idx in simmt['index']])
 	G.add_edges_from([(simmt['index'][k[0]], simmt['columns'][k[1]], dict(similarity=v.item())) for k, v in simmt['values'].todok().iteritems()])
 	nx.write_graphml(G, '%s.graphml' % os.path.splitext(os.path.basename(kwargs['simmt']))[0])
-	
-	
+
+
 def plot_simmt():
 	import graph_tool.all as gt
 	import math
@@ -1622,8 +1622,8 @@ def plot_simmt():
 				  bg_color=[0,0,0,1],
 				  output_size=[4096,4096],
 				  output='hreb.pdf')
-				  
-				  
+
+
 def plot_simmt_hrc():
 	sys.setrecursionlimit(10000)
 	kwargs = {} if opts.cfg is None else ast.literal_eval(opts.cfg)
@@ -1655,8 +1655,8 @@ def plot_clt(is_fuzzy=False, threshold='0.5'):
 			plot.plot_fzyclt(X.as_matrix(), label.as_matrix(), fname='clustering_%i' % i, plot_cfg=plot_common_cfg)
 		else:
 			plot.plot_clt(X.as_matrix(), label.as_matrix().reshape((label.shape[0],)), fname='clustering_%i' % i, plot_cfg=plot_common_cfg)
-			
-			
+
+
 def plot_sampclt(with_cns=False):
 	from sklearn.neighbors import kneighbors_graph, radius_neighbors_graph
 	import networkx as nx
@@ -1678,12 +1678,12 @@ def plot_sampclt(with_cns=False):
 		# 'GSM684682|GSM684683|GSM684684'
 		],
 		1:[
-		# 'GSM271362|GSM271365|GSM271367|GSM271369', 
+		# 'GSM271362|GSM271365|GSM271367|GSM271369',
 		# 'GSM271386|GSM271387|GSM271388|GSM271389',
 		# 'GSM271382|GSM271383|GSM271384|GSM271385',
 		'GSM487691|GSM487692|GSM487693|GSM487694',
 		'GSM487687|GSM487688|GSM487689|GSM487690',
-		'GSM487683|GSM487684|GSM487685|GSM487686'], 
+		'GSM487683|GSM487684|GSM487685|GSM487686'],
 		2:[
 		'GSM272915|GSM272917|GSM272919|GSM272921',
 		'GSM272914|GSM272916|GSM272918|GSM272920',
@@ -1769,8 +1769,8 @@ def plot_sampclt(with_cns=False):
 		else:
 			plt.savefig('sampclt_%i.pdf' % cltid, format='pdf')
 		plt.close()
-		
-		
+
+
 def plot_circos(**kw_args):
 	import matplotlib as mpl
 	import matplotlib.pyplot as plt
@@ -1878,11 +1878,11 @@ def plot_circos(**kw_args):
 	data = pd.concat(top_data)
 	data.to_csv('circos_data.csv')
 	dge_df = dge_df.loc[data.index]
-	
+
 	data['cell_type'] = [x.strip().lower() for x in data['cell_type']]
 	name_norm = {'cells':'somatic cells', 'tissue':'somatic cells', 't-cell':'t cells', 't-cells':'t cells', 'heart':'heart tissues', 'ko & s100a10 cells':'somatic cells', 'cancer cell':'somatic cells', 'cancer cells':'somatic cells', 'normal cells':'somatic cells', 'mcf7 cells':'mcf-7 cells', 'hl60 cell line':'hl60 cells', 'cd34+ cells':'hematopoietic stem cells'}
 	data['cell_type'] = [name_norm[x] if name_norm.has_key(x) else x for x in data['cell_type']]
-	
+
 	rdf = pd2r.py2ri(data)
 	ro.r.assign('data', rdf)
 	io.inst_print('Finish selecting the data and preparing for the first track...')
@@ -2052,7 +2052,7 @@ def plot_circos(**kw_args):
 		xlim <- get.cell.meta.data('xlim')
 		ylim <- get.cell.meta.data('ylim')
 		sector.index <- get.cell.meta.data('sector.index')
-		circos.text(mean(xlim), ylim[2] + uy(1, 'mm'), 
+		circos.text(mean(xlim), ylim[2] + uy(1, 'mm'),
 			sector.index, adj=c(0, 0.025), cex=0.3, facing='clockwise', niceFacing=TRUE)
 	})''')
 	ro.r(r'''highlight.sector(data$subject[data$subject_type==subjtype_lev[1]], track.index=1, col='blue', border=NA, cex=0.8, text.col='white', niceFacing=TRUE)''')
@@ -2119,7 +2119,7 @@ def plot_circos(**kw_args):
 	ro.r(r'''for (i in 1:simmt_size[1]) {
 		for (j in 1:simmt_size[2]) {
 			if (simmt[i,j] > 0) {
-				circos.link(simmt_idx[i], sim_offset[i,j:(j+1)], 
+				circos.link(simmt_idx[i], sim_offset[i,j:(j+1)],
 					simmt_idx[j], sim_offset[j,i:(i+1)],
 					col=add_transparency(col_fun(simmt[i,j]), 0.4),
 					h.ratio=0.6)
@@ -2136,23 +2136,23 @@ def plot_circos(**kw_args):
 	ro.r(r'''lgd_dgepval = Legend(at=c(0,1), col_fun=colorRamp2(unlist(dgepval_range), unlist(dgepval_colrange)), title_position='topleft', title='DGE P-value')''')
 	ro.r(r'''lgd_links = Legend(at=c(0.01,0.03,0.05), col_fun=col_fun, title_position='topleft', title='Association')''')
 
-	ro.r(r'''pushViewport(viewport(x=unit(45,'mm'), y=unit(2,'mm'), 
-		width = grobWidth(lgd_celltype), 
-		height = grobHeight(lgd_celltype), 
+	ro.r(r'''pushViewport(viewport(x=unit(45,'mm'), y=unit(2,'mm'),
+		width = grobWidth(lgd_celltype),
+		height = grobHeight(lgd_celltype),
 		just = c('left', 'bottom')))''')
 	ro.r('''grid.draw(lgd_celltype)''')
 	ro.r('''upViewport()''')
 	ro.r(r'''lgd_vlist_l = packLegend(lgd_subjtype, lgd_sample, lgd_orgnsm)''')
 	ro.r(r'''lgd_vlist_r = packLegend(lgd_dgepval, lgd_links)''')
-	ro.r(r'''pushViewport(viewport(x=unit(2,'mm'), y=unit(2,'mm'), 
-		width = grobWidth(lgd_vlist_l), 
-		height = grobHeight(lgd_vlist_l), 
+	ro.r(r'''pushViewport(viewport(x=unit(2,'mm'), y=unit(2,'mm'),
+		width = grobWidth(lgd_vlist_l),
+		height = grobHeight(lgd_vlist_l),
 		just = c('left', 'bottom')))''')
 	ro.r('''grid.draw(lgd_vlist_l)''')
 	ro.r('''upViewport()''')
-	ro.r(r'''pushViewport(viewport(x=unit(1,'npc')-unit(2,'mm'), y=unit(2,'mm'), 
-		width = grobWidth(lgd_vlist_r), 
-		height = grobHeight(lgd_vlist_r), 
+	ro.r(r'''pushViewport(viewport(x=unit(1,'npc')-unit(2,'mm'), y=unit(2,'mm'),
+		width = grobWidth(lgd_vlist_r),
+		height = grobHeight(lgd_vlist_r),
 		just = c('right','bottom')))''')
 	ro.r('''grid.draw(lgd_vlist_r)''')
 	ro.r('''upViewport()''')
@@ -2209,7 +2209,7 @@ def _gsea(groups, udrg_sgn_df, probe_gene_map, sgndb_path, sample_path, method='
 			print e
 		del join_df
 
-	
+
 def run_gsea():
 	input_ext = os.path.splitext(opts.loc)[1]
 	if (input_ext == '.xlsx' or input_ext == '.xls'):
@@ -2240,7 +2240,7 @@ def run_gsea():
 
 
 def main():
-	
+
 	if (opts.method is None):
 		return
 	elif (opts.method == 'fuseki'):
@@ -2342,7 +2342,7 @@ if __name__ == '__main__':
 	op.add_option('-z', '--timeout', help='timeout seconds')
 	op.add_option('-m', '--method', help='main method to run')
 	op.add_option('-v', '--verbose', action='store_true', dest='verbose', default=False, help='display detailed information')
-	
+
 	(opts, args) = op.parse_args()
 	if len(args) > 0:
 		op.print_help()
@@ -2365,14 +2365,14 @@ if __name__ == '__main__':
 			if (gsc_cfg['BIOGRID_PATH'] is not None and os.path.exists(gsc_cfg['BIOGRID_PATH'])):
 				gsc.BIOGRID_PATH = gsc_cfg['BIOGRID_PATH']
 		nihgene_cfg = cfgr('bionlp.spider.nihgene', 'init')
-		if (len(nihgene_cfg) > 0):	
+		if (len(nihgene_cfg) > 0):
 			if (nihgene_cfg['GENE_PATH'] is not None and os.path.exists(nihgene_cfg['GENE_PATH'])):
 				nihgene.GENE_PATH = nihgene_cfg['GENE_PATH']
 		nihnuccore_cfg = cfgr('bioinfo.spider.nihnuccore', 'init')
-		if (len(nihnuccore_cfg) > 0):	
+		if (len(nihnuccore_cfg) > 0):
 			if (nihnuccore_cfg['GENE_PATH'] is not None and os.path.exists(nihnuccore_cfg['GENE_PATH'])):
 				nihgene.GENE_PATH = nihnuccore_cfg['GENE_PATH']
-				
+
 		common_cfg = cfgr('gsx_helper', 'common')
 		if (len(common_cfg) > 0):
 			if (common_cfg.has_key('RAMSIZE') and common_cfg['RAMSIZE'] is not None):
@@ -2381,6 +2381,6 @@ if __name__ == '__main__':
 		plot_common = cfgr('bionlp.util.plot', 'common')
 		init_plot(plot_cfg=plot_cfg, plot_common=plot_common)
 
-	annot.init()
-			
+	becas.init()
+
 	main()
